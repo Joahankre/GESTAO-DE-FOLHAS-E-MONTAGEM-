@@ -1,0 +1,494 @@
+Imports System.Windows.Forms
+Imports Inventor
+
+' ========================
+' SUB PRINCIPAL
+' ========================
+Sub Main()
+    ' Verificação do documento ativo
+    If ThisApplication.ActiveDocument Is Nothing OrElse _
+       ThisApplication.ActiveDocument.DocumentType <> DocumentTypeEnum.kDrawingDocumentObject Then
+        MessageBox.Show("Este script deve ser executado em um documento de desenho (.idw).", "Documento inválido", MessageBoxButtons.OK, MessageBoxIcon.Warning)
+        Return
+    End If
+
+    Dim drawingDoc As DrawingDocument = CType(ThisApplication.ActiveDocument, DrawingDocument)
+
+    ' Obter montagem da primeira folha
+    Dim assemblyDoc As AssemblyDocument = GetAssemblyFromFirstSheet(drawingDoc)
+    Dim bomRows As BOMRowsEnumerator = Nothing
+    If assemblyDoc IsNot Nothing Then
+        bomRows = GetBOMRows(drawingDoc)
+    End If
+
+    ' ==== FORM PRINCIPAL ====
+    Dim form As New Form With {
+        .Text = "Gestão de Vistas e Impressão",
+        .Width = 1400,
+        .Height = 800,
+        .StartPosition = FormStartPosition.CenterScreen
+    }
+
+    ' ==== SPLIT CONTAINER ====
+    Dim splitContainer As New SplitContainer With {
+        .Dock = DockStyle.Fill,
+        .Orientation = Orientation.Vertical,
+        .SplitterDistance = form.Width \ 2
+    }
+    form.Controls.Add(splitContainer)
+
+    ' =========================
+    ' PAINEL ESQUERDO (TreeView + botões)
+    ' =========================
+    Dim panelEsqLayout As New TableLayoutPanel With {
+        .Dock = DockStyle.Fill,
+        .RowCount = 2
+    }
+    panelEsqLayout.RowStyles.Add(New RowStyle(SizeType.Percent, 100))
+    panelEsqLayout.RowStyles.Add(New RowStyle(SizeType.Absolute, 110))
+    splitContainer.Panel1.Controls.Add(panelEsqLayout)
+
+    ' TreeView
+    Dim treeView As New TreeView With {.Dock = DockStyle.Fill, .CheckBoxes = True}
+    panelEsqLayout.Controls.Add(treeView, 0, 0)
+
+    ' Painel inferior esquerdo
+    Dim panelEsqBottom As New FlowLayoutPanel With {
+        .Dock = DockStyle.Fill,
+        .FlowDirection = FlowDirection.LeftToRight,
+        .AutoScroll = True
+    }
+    panelEsqLayout.Controls.Add(panelEsqBottom, 0, 1)
+
+    ' Botões do TreeView
+    Dim btnInsert As New Button With {.Text = "Inserir Vistas Selecionadas", .Width = 220, .Height = 35}
+    Dim btnExpandir As New Button With {.Text = "Expandir Tudo", .Width = 120, .Height = 35}
+    Dim btnContrair As New Button With {.Text = "Contrair Tudo", .Width = 120, .Height = 35}
+    Dim btnSelecionarTudo As New Button With {.Text = "Selecionar Tudo", .Width = 160, .Height = 35}
+    Dim btnDesmarcarTudo As New Button With {.Text = "Desmarcar Tudo", .Width = 160, .Height = 35}
+    Dim btnAtualizarStatus As New Button With {.Text = "Atualizar Status", .Width = 140, .Height = 35}
+
+    panelEsqBottom.Controls.AddRange({btnInsert, btnExpandir, btnContrair, btnSelecionarTudo, btnDesmarcarTudo, btnAtualizarStatus})
+
+    ' Popular TreeView
+    If bomRows IsNot Nothing Then
+        For Each row As BOMRow In bomRows
+            AddBOMRowNode(Row, treeView.Nodes, drawingDoc)
+        Next
+        OrdenarTreeNodes(treeView.Nodes)
+        treeView.ExpandAll()
+    End If
+
+    ' =========================
+    ' PAINEL DIREITO (Folhas + botões)
+    ' =========================
+    Dim panelDirLayout As New TableLayoutPanel With {
+        .Dock = DockStyle.Fill,
+        .RowCount = 2
+    }
+    panelDirLayout.RowStyles.Add(New RowStyle(SizeType.Percent, 100))
+    panelDirLayout.RowStyles.Add(New RowStyle(SizeType.Absolute, 100))
+    splitContainer.Panel2.Controls.Add(panelDirLayout)
+
+    ' Lista de folhas
+    Dim sheetList As New CheckedListBox With {
+        .Dock = DockStyle.Fill,
+        .CheckOnClick = True,
+        .IntegralHeight = False
+    }
+    panelDirLayout.Controls.Add(sheetList, 0, 0)
+
+    ' Painel inferior direito
+    Dim panelDirBottom As New FlowLayoutPanel With {
+        .Dock = DockStyle.Fill,
+        .FlowDirection = FlowDirection.RightToLeft
+    }
+    panelDirLayout.Controls.Add(panelDirBottom, 0, 1)
+
+    ' Botões do painel direito
+    Dim btnOk As New Button With {.Text = "Confirmar Impressão", .Width = 200, .Height = 40}
+    Dim btnSelectByPrefix As New Button With {.Text = "Selecionar por Prefixo", .Width = 180, .Height = 35}
+    Dim btnDeselectAll As New Button With {.Text = "Desmarcar Todas", .Width = 160, .Height = 35}
+    Dim btnSelectAll As New Button With {.Text = "Selecionar Todas", .Width = 160, .Height = 35}
+
+    panelDirBottom.Controls.AddRange({btnOk, btnSelectByPrefix, btnDeselectAll, btnSelectAll})
+
+    ' Popular lista de folhas
+    Dim oSheets As Sheets = drawingDoc.Sheets
+    For Each sh As Sheet In oSheets
+        sheetList.Items.Add(sh.Name, Not sh.ExcludeFromPrinting)
+    Next
+
+    ' =========================
+    ' HANDLERS (mesmos do seu código)
+    ' =========================
+    AddHandler btnInsert.Click, Sub()
+        Dim checkedNodes = GetCheckedNodes(treeView.Nodes)
+        If checkedNodes.Count = 0 Then
+            MessageBox.Show("Selecione ao menos um componente.", "Atenção", MessageBoxButtons.OK, MessageBoxIcon.Information)
+            Return
+        End If
+        For Each node As TreeNode In checkedNodes
+            Dim tagData = TryCast(node.Tag, Tuple(Of String, String, String))
+            If tagData IsNot Nothing Then
+                InsertBaseViewUsingCopiedSheet(drawingDoc, tagData.Item1, tagData.Item2, tagData.Item3)
+            End If
+        Next
+        MessageBox.Show("Vistas inseridas com sucesso.", "Concluído", MessageBoxButtons.OK, MessageBoxIcon.Information)
+    End Sub
+
+    AddHandler btnExpandir.Click, Sub() treeView.ExpandAll()
+    AddHandler btnContrair.Click, Sub() treeView.CollapseAll()
+    AddHandler btnSelecionarTudo.Click, Sub() SetCheckState(treeView.Nodes, True)
+    AddHandler btnDesmarcarTudo.Click, Sub() SetCheckState(treeView.Nodes, False)
+
+    AddHandler btnAtualizarStatus.Click, Sub()
+        treeView.BeginUpdate()
+        treeView.Nodes.Clear()
+        If bomRows IsNot Nothing Then
+            For Each row As BOMRow In bomRows
+                AddBOMRowNode(Row, treeView.Nodes, drawingDoc)
+            Next
+            OrdenarTreeNodes(treeView.Nodes)
+            treeView.ExpandAll()
+        End If
+        treeView.EndUpdate()
+    End Sub
+
+    AddHandler btnSelectAll.Click, Sub()
+        For i As Integer = 0 To sheetList.Items.Count - 1
+            sheetList.SetItemChecked(i, True)
+        Next
+    End Sub
+
+    AddHandler btnDeselectAll.Click, Sub()
+        For i As Integer = 0 To sheetList.Items.Count - 1
+            sheetList.SetItemChecked(i, False)
+        Next
+    End Sub
+
+    AddHandler btnSelectByPrefix.Click, Sub()
+        Dim prefixo As String = InputBox("Digite o prefixo (mínimo 2 caracteres):", "Selecionar por Prefixo")
+        If prefixo Is Nothing Then Return
+        If prefixo.Length >= 2 Then
+            For i As Integer = 0 To sheetList.Items.Count - 1
+                If sheetList.Items(i).ToString().ToUpper().StartsWith(prefixo.ToUpper()) Then
+                    sheetList.SetItemChecked(i, True)
+                End If
+            Next
+        Else
+            MessageBox.Show("Digite pelo menos 2 caracteres.", "Prefixo Inválido", MessageBoxButtons.OK, MessageBoxIcon.Warning)
+        End If
+    End Sub
+
+    AddHandler btnOk.Click, Sub()
+        For i As Integer = 0 To sheetList.Items.Count - 1
+            Dim sheetName As String = sheetList.Items(i).ToString()
+            Dim selectedSheet As Sheet = oSheets.Item(sheetName)
+            selectedSheet.ExcludeFromPrinting = Not sheetList.GetItemChecked(i)
+        Next
+        MessageBox.Show("Configuração de impressão atualizada com sucesso!", "Sucesso")
+    End Sub
+
+    ' Mostrar formulário
+    form.ShowDialog()
+End Sub
+
+' =====================================
+' FUNÇÕES AUXILIARES
+' =====================================
+
+' === OBTÉM DOCUMENTO DE MONTAGEM DA PRIMEIRA FOLHA ===
+Function GetAssemblyFromFirstSheet(drawingDoc As DrawingDocument) As AssemblyDocument
+    Try
+        Dim firstSheet As Sheet = drawingDoc.Sheets.Item(1)
+        If firstSheet.DrawingViews.Count = 0 Then Return Nothing
+
+        Dim baseView As DrawingView = firstSheet.DrawingViews.Item(1)
+        Dim refDocDescriptor As DocumentDescriptor = Nothing
+
+        Try
+            refDocDescriptor = baseView.ReferencedDocumentDescriptor
+        Catch
+            Return Nothing
+        End Try
+
+        If refDocDescriptor Is Nothing Then Return Nothing
+
+        Dim refDoc As Document = Nothing
+        Try
+            refDoc = refDocDescriptor.ReferencedDocument
+        Catch
+            Return Nothing
+        End Try
+
+        If refDoc IsNot Nothing AndAlso refDoc.DocumentType = DocumentTypeEnum.kAssemblyDocumentObject Then
+            Return CType(refDoc, AssemblyDocument)
+        End If
+    Catch ex As Exception
+        MessageBox.Show("Erro ao acessar montagem da primeira folha:" & vbCrLf & ex.Message, "Erro", MessageBoxButtons.OK, MessageBoxIcon.Error)
+    End Try
+    Return Nothing
+End Function
+
+' === OBTÉM BOM ROWS DA MONTAGEM ===
+Function GetBOMRows(drawingDoc As DrawingDocument) As BOMRowsEnumerator
+    Try
+        If drawingDoc.Sheets.Count = 0 OrElse drawingDoc.Sheets.Item(1).DrawingViews.Count = 0 Then
+            Return Nothing
+        End If
+
+        Dim refDoc As Document = drawingDoc.Sheets.Item(1).DrawingViews.Item(1).ReferencedDocumentDescriptor.ReferencedDocument
+        If Not TypeOf refDoc Is AssemblyDocument Then Return Nothing
+
+        Dim asm As AssemblyDocument = CType(refDoc, AssemblyDocument)
+        Dim bom As BOM = asm.ComponentDefinition.BOM
+        bom.StructuredViewEnabled = True
+        bom.StructuredViewFirstLevelOnly = False
+
+        For Each view As BOMView In bom.BOMViews
+            If View.ViewType = BOMViewTypeEnum.kStructuredBOMViewType Then
+                Return View.BOMRows
+            End If
+        Next
+    Catch
+        Return Nothing
+    End Try
+    Return Nothing
+End Function
+
+' === ADICIONA NÓS NO TREEVIEW DO BOM ===
+Sub AddBOMRowNode(row As BOMRow, parent As TreeNodeCollection, drawingDoc As DrawingDocument)
+    Try
+        ' Ignorar membros do Content Center ou estruturas não normais
+        If row.ComponentDefinitions IsNot Nothing AndAlso row.ComponentDefinitions.Count > 0 Then
+            Dim definicaoComp = row.ComponentDefinitions.Item(1)
+            If TypeOf definicaoComp Is PartComponentDefinition Then
+                If CType(definicaoComp, PartComponentDefinition).IsContentMember Then Exit Sub
+            End If
+            If definicaoComp.BOMStructure <> BOMStructureEnum.kNormalBOMStructure Then Exit Sub
+        End If
+
+        ' Propriedades do documento
+        Dim docPath As String = ""
+        Dim partName As String = ""
+        Dim itemName As String = ""
+
+        Try
+            If row.ComponentDefinitions IsNot Nothing AndAlso row.ComponentDefinitions.Count > 0 Then
+                Dim doc As Document = row.ComponentDefinitions.Item(1).Document
+                docPath = doc.FullFileName
+                Try
+                    partName = doc.PropertySets.Item("Design Tracking Properties").Item("Part Number").Value
+                Catch
+                    partName = ""
+                End Try
+            End If
+        Catch
+        End Try
+
+        Try
+            itemName = row.Name
+        Catch
+            itemName = row.ItemNumber
+        End Try
+
+        Dim itemNumber As String = row.ItemNumber
+
+        ' Verifica se já existe vista dessa peça no desenho
+        Dim inDrawing As Boolean = False
+        Dim pages As New List(Of String)
+
+        For Each sh As Sheet In drawingDoc.Sheets
+            For Each vw As DrawingView In sh.DrawingViews
+                Try
+                    Dim rd As Document = vw.ReferencedDocumentDescriptor.ReferencedDocument
+                    If rd IsNot Nothing AndAlso String.Equals(rd.FullFileName, docPath, StringComparison.OrdinalIgnoreCase) Then
+                        inDrawing = True
+                        Dim pageNum As String = If(sh.Name.Contains(":"), sh.Name.Substring(sh.Name.LastIndexOf(":") + 1).PadLeft(2, "0"c), "01")
+                        If Not pages.Contains(pageNum) Then pages.Add(pageNum)
+                    End If
+                Catch
+                End Try
+            Next
+        Next
+        pages.Sort()
+
+        ' Define status visual
+        Dim status As String
+        Dim pageText As String = ""
+
+        If Not inDrawing Then
+            status = "🚫"
+        ElseIf pages.Count = 1 Then
+            status = "✔️"
+            pageText = String.Format("[Pág: {0}]", pages(0))
+        Else
+            status = "🔵"
+            pageText = "[Pág: " & String.Join(", ", pages) & "]"
+        End If
+
+        Dim labelNumber As String = If(Not String.IsNullOrEmpty(partName), partName, itemNumber)
+        Dim nodeText As String = String.Format("({0}) {1} – {2} {3}", status, itemNumber, labelNumber, pageText)
+
+        Dim tagData As Tuple(Of String, String, String) = Tuple.Create(docPath, itemNumber, labelNumber)
+
+        Dim node As New TreeNode(nodeText) With {
+            .Tag = tagData,
+            .Name = itemNumber
+        }
+        parent.Add(node)
+
+        ' Recursivo para filhos
+        If row.ChildRows IsNot Nothing AndAlso row.ChildRows.Count > 0 Then
+            For Each child As BOMRow In row.ChildRows
+                AddBOMRowNode(child, node.Nodes, drawingDoc)
+            Next
+        End If
+    Catch
+        ' ignora erros de nó individual
+    End Try
+End Sub
+
+' === OBTÉM NÓS MARCADOS DO TREEVIEW ===
+Function GetCheckedNodes(nodes As TreeNodeCollection) As List(Of TreeNode)
+    Dim list As New List(Of TreeNode)
+    For Each n As TreeNode In nodes
+        If n.Checked Then list.Add(n)
+        If n.Nodes.Count > 0 Then list.AddRange(GetCheckedNodes(n.Nodes))
+    Next
+    Return list
+End Function
+
+' === MARCAR/DESMARCAR TODOS OS NÓS ===
+Sub SetCheckState(nodes As TreeNodeCollection, state As Boolean)
+    For Each node As TreeNode In nodes
+        node.Checked = state
+        If node.Nodes.Count > 0 Then
+            SetCheckState(node.Nodes, state)
+        End If
+    Next
+End Sub
+
+' === CALCULA ESCALA IDEAL DE VISTA ===
+Private Function CalcularEscalaIdeal(compDef As ComponentDefinition) As Double
+    Try
+        Dim oBox As Box = compDef.RangeBox
+        Dim largura As Double = Math.Abs(oBox.MaxPoint.X - oBox.MinPoint.X)
+        Dim altura As Double = Math.Abs(oBox.MaxPoint.Y - oBox.MinPoint.Y)
+        Dim profundidade As Double = Math.Abs(oBox.MaxPoint.Z - oBox.MinPoint.Z)
+
+        Dim tamanhoMaximo As Double = Math.Max(largura, Math.Max(altura, profundidade)) * 10
+        Dim areaUtil As Double = 180
+        Dim escala As Double = areaUtil / tamanhoMaximo
+
+        If escala >= 1 Then Return 1
+        If escala >= 0.5 Then Return 0.5
+        If escala >= 0.2 Then Return 0.2
+        If escala >= 0.1 Then Return 0.1
+        Return 0.05
+    Catch
+        Return 1
+    End Try
+End Function
+
+' === INSERE NOVA VISTA BASE ===
+Sub InsertBaseViewUsingCopiedSheet(drawingDoc As DrawingDocument, partPath As String, itemNumber As String, labelNumber As String)
+    Try
+        ' Abre documento
+        Dim partDoc As Document = Nothing
+        Try
+            partDoc = ThisApplication.Documents.Open(partPath, False)
+        Catch ex As Exception
+            MessageBox.Show("Erro ao abrir o arquivo da peça: " & partPath & vbCrLf & ex.Message, "Erro", MessageBoxButtons.OK, MessageBoxIcon.Error)
+            Return
+        End Try
+
+        ' Copia última folha como modelo
+        Dim folhaModelo As Sheet = drawingDoc.Sheets.Item(drawingDoc.Sheets.Count)
+        Dim docTemp As DrawingDocument = CType(ThisApplication.Documents.Add(DocumentTypeEnum.kDrawingDocumentObject, , False), DrawingDocument)
+        Dim folhaTemp As Sheet = folhaModelo.CopyTo(docTemp)
+        Dim novaFolha As Sheet = folhaTemp.CopyTo(drawingDoc)
+        docTemp.Close(True)
+
+        novaFolha.Name = String.Format("{0} – {1}", itemNumber, labelNumber)
+
+        ' Remove views existentes
+        For Each vw As DrawingView In novaFolha.DrawingViews.Cast(Of DrawingView).ToList()
+            vw.Delete()
+        Next
+        novaFolha.Activate()
+
+        ' Escala ideal
+        Dim escala As Double = 1.0
+        If TypeOf partDoc Is PartDocument OrElse TypeOf partDoc Is AssemblyDocument Then
+            Dim cd As ComponentDefinition = Nothing
+            If TypeOf partDoc Is PartDocument Then cd = CType(partDoc, PartDocument).ComponentDefinition
+            If TypeOf partDoc Is AssemblyDocument Then cd = CType(partDoc, AssemblyDocument).ComponentDefinition
+            If cd IsNot Nothing Then escala = CalcularEscalaIdeal(cd)
+        End If
+
+        ' Insere vista base
+        Dim tg As TransientGeometry = ThisApplication.TransientGeometry
+        Dim pt As Point2d = tg.CreatePoint2d(10, 10)
+
+        Dim baseView As DrawingView = novaFolha.DrawingViews.AddBaseView(
+            partDoc,
+            pt,
+            escala,
+            ViewOrientationTypeEnum.kDefaultViewOrientation,
+            DrawingViewStyleEnum.kHiddenLineRemovedDrawingViewStyle
+        )
+        baseView.DisplayTangentEdges = True
+
+        ' Fecha peça
+        Try
+            partDoc.Close(False)
+        Catch
+        End Try
+
+    Catch ex As Exception
+        MessageBox.Show("Erro ao inserir vista: " & ex.Message, "Erro", MessageBoxButtons.OK, MessageBoxIcon.Error)
+    End Try
+End Sub
+
+' === ORDENA TREEVIEW PELO NÚMERO DE ITEM ===
+Sub OrdenarTreeNodes(nodes As TreeNodeCollection)
+    Dim nodeList = nodes.Cast(Of TreeNode).ToList()
+    nodeList.Sort(Function(a, b) CompararItemNumbers(a.Name, b.Name))
+
+    nodes.Clear()
+    For Each node In nodeList
+        nodes.Add(node)
+        If node.Nodes.Count > 0 Then
+            OrdenarTreeNodes(node.Nodes)
+        End If
+    Next
+End Sub
+
+Function CompararItemNumbers(x As String, y As String) As Integer
+    Dim regex As New System.Text.RegularExpressions.Regex("\d+(\.\d+)*")
+    Dim numeroX = ExtrairNumeros(x, regex)
+    Dim numeroY = ExtrairNumeros(y, regex)
+
+    For i As Integer = 0 To Math.Min(numeroX.Count, numeroY.Count) - 1
+        Dim cmp = numeroX(i).CompareTo(numeroY(i))
+        If cmp <> 0 Then Return cmp
+    Next
+
+    Return numeroX.Count.CompareTo(numeroY.Count)
+End Function
+
+Function ExtrairNumeros(texto As String, regex As System.Text.RegularExpressions.Regex) As List(Of Integer)
+    Dim match = regex.Match(texto)
+    Dim nums As New List(Of Integer)
+    If match.Success Then
+        For Each parte In match.Value.Split("."c)
+            Dim num As Integer
+            Integer.TryParse(parte, num)
+            nums.Add(num)
+        Next
+    End If
+    If nums.Count = 0 Then nums.Add(0)
+    Return nums
+End Function
