@@ -1,0 +1,20 @@
+Function GetBOMRows(drawingDoc As DrawingDocument) As BOMRowsEnumerator
+    Try
+        Dim refDoc = drawingDoc.Sheets.Item(1).DrawingViews.Item(1).ReferencedDocumentDescriptor.ReferencedDocument
+        If Not TypeOf refDoc Is AssemblyDocument Then Return Nothing
+        Dim asm As AssemblyDocument = CType(refDoc, AssemblyDocument)
+        With asm.ComponentDefinition.BOM
+    .StructuredViewEnabled = True
+    .StructuredViewFirstLevelOnly = False
+    .PartsOnlyViewEnabled = False
+
+            For Each view As BOMView In .BOMViews
+                If View.ViewType = BOMViewTypeEnum.kStructuredBOMViewType Then
+                    Return View.BOMRows
+                End If
+            Next
+        End With
+    Catch
+    End Try
+    Return Nothing
+End Function
