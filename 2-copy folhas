@@ -1,0 +1,197 @@
+Option Explicit
+Imports System.Windows.Forms
+
+
+Sub Main()
+    Dim drawingDoc As DrawingDocument = TryCast(ThisApplication.ActiveDocument, DrawingDocument)
+    If drawingDoc Is Nothing Then
+        MessageBox.Show("Documento de desenho não encontrado.", "Erro", MessageBoxButtons.OK, MessageBoxIcon.Error)
+        Exit Sub
+    End If
+
+    Dim browserPane As BrowserPane = GetBrowserPane(drawingDoc)
+    If browserPane Is Nothing Then
+        MessageBox.Show("Painel de navegador não encontrado.", "Erro", MessageBoxButtons.OK, MessageBoxIcon.Error)
+        Exit Sub
+    End If
+
+    ' Construção do formulário
+    Dim form As New Form()
+    form.Text = "Selecionar folhas para copiar"
+    form.Width = 800
+    form.Height = 600
+    form.StartPosition = FormStartPosition.CenterScreen
+    form.FormBorderStyle = FormBorderStyle.FixedDialog
+    form.MaximizeBox = False
+    form.MinimizeBox = False
+
+    Dim lbl As New Label()
+    lbl.Text = "Marque as folhas que deseja copiar:"
+    lbl.Left = 20
+    lbl.Top = 20
+    lbl.Width = form.Width - 40
+    form.Controls.Add(lbl)
+
+    Dim sheetListView As New ListView()
+    sheetListView.Left = 20
+    sheetListView.Top = lbl.Bottom + 10
+    sheetListView.Width = form.Width - 40
+    sheetListView.Height = form.Height - 160
+    sheetListView.CheckBoxes = True
+    sheetListView.View = System.Windows.Forms.View.List
+    form.Controls.Add(sheetListView)
+
+    ' Preencher folhas no ListView
+    For Each sh As Sheet In drawingDoc.Sheets
+        sheetListView.Items.Add(sh.Name)
+    Next
+
+    Dim btnCopiar As New Button()
+    btnCopiar.Text = "Copiar Selecionadas"
+    btnCopiar.Left = 20
+    btnCopiar.Top = sheetListView.Bottom + 10
+    btnCopiar.Width = 180
+    btnCopiar.Height = 36
+    form.Controls.Add(btnCopiar)
+
+    Dim btnFechar As New Button()
+    btnFechar.Text = "Fechar"
+    btnFechar.Left = btnCopiar.Right + 20
+    btnFechar.Top = btnCopiar.Top
+    btnFechar.Width = 120
+    btnFechar.Height = 36
+    btnFechar.DialogResult = DialogResult.Cancel
+    form.Controls.Add(btnFechar)
+
+    AddHandler btnCopiar.Click, Sub(sender, e)
+                                    Try
+                                        CopyWithDiagnostics(sheetListView, drawingDoc, browserPane)
+                                        MessageBox.Show("Processo completo: cópias inseridas conforme originais ou fallback usado.", "Sucesso", MessageBoxButtons.OK, MessageBoxIcon.Information)
+                                        ' Atualizar lista
+                                        sheetListView.Items.Clear()
+                                        For Each sh2 As Sheet In drawingDoc.Sheets
+                                            sheetListView.Items.Add(sh2.Name)
+                                        Next
+                                    Catch ex As Exception
+                                        MessageBox.Show("Erro fatal: " & ex.Message, "Erro", MessageBoxButtons.OK, MessageBoxIcon.Error)
+                                    End Try
+                                End Sub
+
+    form.ShowDialog()
+End Sub
+
+Private Sub CopyWithDiagnostics(sheetListView As ListView, drawingDoc As DrawingDocument, browserPane As BrowserPane)
+    Dim oSheets As Sheets = drawingDoc.Sheets
+
+    ' Obter folhas selecionadas
+    Dim selectedNames = sheetListView.CheckedItems.Cast(Of ListViewItem)().Select(Function(i) i.Text).ToList()
+    If selectedNames.Count = 0 Then
+        MessageBox.Show("Nenhuma folha selecionada.", "Aviso", MessageBoxButtons.OK, MessageBoxIcon.Warning)
+        Return
+    End If
+
+    ' Mapa de original → cópia
+    Dim mapOrigToCopy As New Dictionary(Of Sheet, Sheet)()
+
+    ' Primeiro método: usando tempDrawingDoc para tentar contornar erros
+    Dim tempDrawingDoc As DrawingDocument = Nothing
+
+    For Each nome As String In selectedNames
+        Try
+            Dim shOrig As Sheet = oSheets.Item(nome)
+            If shOrig Is Nothing Then
+                MessageBox.Show("Folha não encontrada: " & nome, "Aviso", MessageBoxButtons.OK, MessageBoxIcon.Warning)
+                Continue For
+            End If
+
+            ' Tentar abordagem via tempDrawingDoc
+            If tempDrawingDoc Is Nothing Then
+                tempDrawingDoc = CType(ThisApplication.Documents.Add(DocumentTypeEnum.kDrawingDocumentObject, , False), DrawingDocument)
+            End If
+
+            Dim tempSheet As Sheet = Nothing
+            Try
+                tempSheet = shOrig.CopyTo(tempDrawingDoc)
+            Catch ex1 As Exception
+                MessageBox.Show("Falha no CopyTo(temp) para '" & nome & "': " & ex1.Message, "Diagnóstico", MessageBoxButtons.OK, MessageBoxIcon.Warning)
+                tempSheet = Nothing
+            End Try
+
+            Dim shCopia As Sheet = Nothing
+
+            If tempSheet IsNot Nothing Then
+                Try
+                    shCopia = tempSheet.CopyTo(drawingDoc)
+                Catch ex2 As Exception
+                    MessageBox.Show("Falha no tempSheet.CopyTo(destino) para '" & nome & "': " & ex2.Message, "Diagnóstico", MessageBoxButtons.OK, MessageBoxIcon.Warning)
+                    shCopia = Nothing
+                End Try
+            End If
+
+            ' Se a cópia via temp falhar ou shCopia estiver Nothing, fallback direto
+            If shCopia Is Nothing Then
+                ' fallback: usar CopyTo direto no documento
+                Try
+                    Dim qtdAntes As Integer = oSheets.Count
+                    shOrig.CopyTo(oSheets)
+                    ' localizar cópia no final
+                    For j As Integer = qtdAntes + 1 To oSheets.Count
+                        Dim tempSh As Sheet = oSheets.Item(j)
+                        ' se nome diferente ou outro indicador
+                        If tempSh.Name <> shOrig.Name Then
+                            shCopia = tempSh
+                            Exit For
+                        End If
+                    Next
+                    If shCopia Is Nothing Then
+                        MessageBox.Show("Não foi possível localizar a cópia após fallback para: " & nome, "Diagnóstico", MessageBoxButtons.OK, MessageBoxIcon.Error)
+                        Continue For
+                    End If
+                Catch ex3 As Exception
+                    MessageBox.Show("Falha no fallback para folha '" & nome & "': " & ex3.Message, "Diagnóstico", MessageBoxButtons.OK, MessageBoxIcon.Error)
+                    Continue For
+                End Try
+            End If
+
+            ' Se chegamos até aqui com shCopia válido
+            mapOrigToCopy.Add(shOrig, shCopia)
+
+        Catch exAll As Exception
+            MessageBox.Show("Erro inesperado ao copiar '" & nome & "': " & exAll.Message, "Diagnóstico", MessageBoxButtons.OK, MessageBoxIcon.Error)
+        End Try
+    Next
+
+    ' Fechar tempDrawingDoc se foi criado
+    If tempDrawingDoc IsNot Nothing Then
+        Try
+            tempDrawingDoc.Close(True)
+        Catch
+        End Try
+    End If
+
+    ' Agora reposicionar cada cópia logo após cada original
+    For Each kvp In mapOrigToCopy
+        Try
+            Dim shOrig As Sheet = kvp.Key
+            Dim shCopia As Sheet = kvp.Value
+            Dim nodeOrig As BrowserNode = browserPane.GetBrowserNodeFromObject(shOrig)
+            Dim nodeCopia As BrowserNode = browserPane.GetBrowserNodeFromObject(shCopia)
+            If nodeOrig Is Nothing Or nodeCopia Is Nothing Then
+                MessageBox.Show("Não foi possível obter node para reposição: " & shOrig.Name, "Aviso", MessageBoxButtons.OK, MessageBoxIcon.Warning)
+            Else
+                browserPane.Reorder(nodeOrig, False, nodeCopia)
+            End If
+        Catch exRep As Exception
+            MessageBox.Show("Erro ao reposicionar cópia de '" & kvp.Key.Name & "': " & exRep.Message, "Diagnóstico", MessageBoxButtons.OK, MessageBoxIcon.Error)
+        End Try
+    Next
+
+    drawingDoc.Update()
+End Sub
+
+Private Function GetBrowserPane(drawingDoc As DrawingDocument) As BrowserPane
+    Try : Return drawingDoc.BrowserPanes.Item("Modelo") : Catch : End Try
+    Try : Return drawingDoc.BrowserPanes.Item("Model") : Catch : End Try
+    Try : Return drawingDoc.BrowserPanes.Item(1) : Catch : End Try
+    Return Nothing
+End Function
