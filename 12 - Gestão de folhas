@@ -133,6 +133,13 @@ Sub Main()
 
     AtualizarListaDeFolhas(sheetListView, drawingDoc)
 End Sub
+	AddHandler btnAtualizarFolhas.Click, Sub()
+    AtualizarFolhasEBOM(sheetListView, treeView, drawingDoc)
+End Sub
+AddHandler btnAtualizarStatus.Click, Sub()
+    AtualizarFolhasEBOM(sheetListView, treeView, drawingDoc)
+End Sub
+
 
 
     AddHandler btnDeselectAll.Click, Sub()
@@ -661,4 +668,22 @@ Sub InsertBaseViewUsingCopiedSheet(drawingDoc As DrawingDocument, partPath As St
     Catch ex As Exception
         MessageBox.Show("Erro ao inserir vista: " & ex.Message, "Erro", MessageBoxButtons.OK, MessageBoxIcon.Error)
     End Try
+End Sub
+Sub AtualizarFolhasEBOM(sheetListView As ListView, TreeView As TreeView, drawingDoc As DrawingDocument)
+    ' Atualiza folhas
+    AtualizarListaDeFolhas(sheetListView, drawingDoc)
+
+    ' Atualiza BOM
+    TreeView.Nodes.Clear()
+
+    Dim assemblyDoc As AssemblyDocument = GetAssemblyFromFirstSheet(drawingDoc)
+    Dim bomRows As BOMRowsEnumerator = If(assemblyDoc IsNot Nothing, GetBOMRows(drawingDoc), Nothing)
+
+    If bomRows IsNot Nothing Then
+        For Each Row As BOMRow In bomRows
+            AddBOMRowNode(Row, TreeView.Nodes, drawingDoc)
+        Next
+        OrdenarTreeNodes(TreeView.Nodes)
+        TreeView.ExpandAll()
+    End If
 End Sub
