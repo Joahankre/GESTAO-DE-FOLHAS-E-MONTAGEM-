@@ -1,0 +1,63 @@
+Sub CopiarFolhasSelecionadas(sheetListView As ListView, drawingDoc As DrawingDocument)
+
+    ' Obter lista de folhas selecionadas
+    Dim selectedSheets = sheetListView.CheckedItems.Cast(Of ListViewItem)().
+                         Select(Function(i) i.Text).ToList()
+
+    If selectedSheets.Count = 0 Then
+        MessageBox.Show("Selecione ao menos uma folha para copiar.", "Aviso",
+                        MessageBoxButtons.OK, MessageBoxIcon.Warning)
+        Return
+    End If
+
+    ' Tenta acessar o painel de navegador
+    Dim browserPane As BrowserPane = Nothing
+    Try
+        browserPane = drawingDoc.BrowserPanes.Item("Modelo")
+    Catch
+        Try
+            browserPane = drawingDoc.BrowserPanes.Item("Model")
+        Catch
+            MessageBox.Show("Não foi possível acessar o navegador de folhas.", "Erro",
+                            MessageBoxButtons.OK, MessageBoxIcon.Error)
+            Return
+        End Try
+    End Try
+
+    ' Mapeia folha original → cópia
+    Dim mapa As New Dictionary(Of Sheet, Sheet)
+
+    ' Copia as folhas
+    For Each sheetName As String In selectedSheets
+        Try
+            Dim shOriginal As Sheet = drawingDoc.Sheets.Item(sheetName)
+            Dim shCopia As Sheet = shOriginal.CopyTo(drawingDoc)
+            mapa.Add(shOriginal, shCopia)
+        Catch ex As Exception
+            MessageBox.Show("Erro ao copiar folha '" & sheetName & "': " & ex.Message,
+                            "Erro", MessageBoxButtons.OK, MessageBoxIcon.Error)
+        End Try
+    Next
+
+    ' Reorganiza cópias logo após a folha original
+    For Each kvp In mapa
+        Dim folhaOriginal As Sheet = kvp.Key
+        Dim folhaCopia As Sheet = kvp.Value
+
+        Try
+            Dim nodeOriginal As BrowserNode = browserPane.GetBrowserNodeFromObject(folhaOriginal)
+            Dim nodeCopia As BrowserNode = browserPane.GetBrowserNodeFromObject(folhaCopia)
+
+            browserPane.Reorder(nodeOriginal, False, nodeCopia) ' False → insere após
+        Catch ex As Exception
+            MessageBox.Show("Erro ao reposicionar cópia da folha '" & folhaOriginal.Name & "': " & ex.Message,
+                            "Erro", MessageBoxButtons.OK, MessageBoxIcon.Error)
+        End Try
+    Next
+
+    drawingDoc.Update()
+
+    MessageBox.Show("Folhas copiadas e inseridas após as originais.", "Sucesso",
+                    MessageBoxButtons.OK, MessageBoxIcon.Information)
+
+End Sub
