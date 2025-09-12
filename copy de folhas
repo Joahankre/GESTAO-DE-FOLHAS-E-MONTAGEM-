@@ -1,0 +1,173 @@
+Sub Main()
+
+    ' --- Obter documento de desenho ---
+    Dim drawingDoc As DrawingDocument = TryCast(ThisApplication.ActiveDocument, DrawingDocument)
+    If drawingDoc Is Nothing Then
+        System.Windows.Forms.MessageBox.Show("Documento de desenho não encontrado.", "Erro")
+        Return
+    End If
+    Dim oSheets As Sheets = drawingDoc.Sheets
+
+    ' --- Construção do formulário ---
+    Dim formWidth As Integer = 960
+    Dim formHeight As Integer = 720
+
+    Dim form As New System.Windows.Forms.Form()
+    form.Text = "Selecione as folhas para impressão / cópia"
+    form.Width = formWidth
+    form.Height = formHeight
+    form.StartPosition = System.Windows.Forms.FormStartPosition.CenterScreen
+    form.FormBorderStyle = System.Windows.Forms.FormBorderStyle.FixedDialog
+    form.MinimizeBox = False
+    form.MaximizeBox = False
+
+    Dim lbl As New System.Windows.Forms.Label()
+    lbl.Text = "Marque as folhas que deseja copiar (cada cópia será inserida logo após a original):"
+    lbl.Left = 20
+    lbl.Top = 20
+    lbl.Width = formWidth - 60
+    lbl.Height = 30
+    form.Controls.Add(lbl)
+
+    Dim sheetList As New System.Windows.Forms.CheckedListBox()
+    sheetList.Left = 20
+    sheetList.Top = lbl.Bottom + 10
+    sheetList.Width = formWidth - 60
+    sheetList.Height = formHeight - 260
+    sheetList.CheckOnClick = True
+    sheetList.Anchor = System.Windows.Forms.AnchorStyles.Top Or System.Windows.Forms.AnchorStyles.Left Or System.Windows.Forms.AnchorStyles.Right Or System.Windows.Forms.AnchorStyles.Bottom
+    form.Controls.Add(sheetList)
+
+    ' Preencher lista com folhas existentes (índice 1..Count)
+    For i As Integer = 1 To oSheets.Count
+        Dim sh As Sheet = oSheets.Item(i)
+        sheetList.Items.Add(sh.Name, Not sh.ExcludeFromPrinting)
+    Next
+
+    ' Botões
+    Dim btnCopiar As New System.Windows.Forms.Button()
+    btnCopiar.Text = "Copiar Páginas"
+    btnCopiar.Left = 20
+    btnCopiar.Top = sheetList.Bottom + 10
+    btnCopiar.Width = 140
+    btnCopiar.Height = 36
+    form.Controls.Add(btnCopiar)
+
+    Dim btnOk As New System.Windows.Forms.Button()
+    btnOk.Text = "Confirmar"
+    btnOk.Left = btnCopiar.Right + 12
+    btnOk.Top = sheetList.Bottom + 10
+    btnOk.Width = 140
+    btnOk.Height = 36
+    btnOk.DialogResult = System.Windows.Forms.DialogResult.OK
+    form.Controls.Add(btnOk)
+
+    Dim btnFechar As New System.Windows.Forms.Button()
+    btnFechar.Text = "Fechar"
+    btnFechar.Left = btnOk.Right + 12
+    btnFechar.Top = sheetList.Bottom + 10
+    btnFechar.Width = 140
+    btnFechar.Height = 36
+    btnFechar.DialogResult = System.Windows.Forms.DialogResult.Cancel
+    form.Controls.Add(btnFechar)
+
+    ' Evento do botão "Copiar Páginas" — usa lambda para chamar rotina que faz a cópia + realocação
+    AddHandler btnCopiar.Click, Sub(sender As Object, e As System.EventArgs)
+                                    CopySelectedSheetsAndInsertAfter(drawingDoc, oSheets, sheetList)
+                                    ' Atualiza visualmente a lista para refletir novas folhas
+                                    sheetList.Items.Clear()
+                                    For j As Integer = 1 To oSheets.Count
+                                        Dim s As Sheet = oSheets.Item(j)
+                                        sheetList.Items.Add(s.Name, Not s.ExcludeFromPrinting)
+                                    Next
+                                End Sub
+
+    ' Mostrar form
+    Dim res As System.Windows.Forms.DialogResult = form.ShowDialog()
+
+    If res = System.Windows.Forms.DialogResult.OK Then
+        ' Atualizar ExcludeFromPrinting conforme seleção atual
+        For i As Integer = 0 To sheetList.Items.Count - 1
+            Dim nomeFolha As String = sheetList.Items(i).ToString()
+            Dim folha As Sheet = oSheets.Item(nomeFolha)
+            folha.ExcludeFromPrinting = Not sheetList.GetItemChecked(i)
+        Next
+        drawingDoc.Update()
+    End If
+
+End Sub
+
+' --- Helper: Faz as cópias e insere cada cópia após a sua original ---
+Private Sub CopySelectedSheetsAndInsertAfter(drawingDoc As DrawingDocument, oSheets As Sheets, sheetList As System.Windows.Forms.CheckedListBox)
+
+    Dim browserPane As BrowserPane = GetDrawingBrowserPane(drawingDoc)
+    If browserPane Is Nothing Then
+        System.Windows.Forms.MessageBox.Show("Painel de navegador do desenho não encontrado.", "Erro")
+        Return
+    End If
+
+    ' Obter nomes selecionados
+    Dim selectedNames As New System.Collections.Generic.List(Of String)
+    For i As Integer = 0 To sheetList.Items.Count - 1
+        If sheetList.GetItemChecked(i) Then selectedNames.Add(sheetList.Items(i).ToString())
+    Next
+
+    If selectedNames.Count = 0 Then
+        System.Windows.Forms.MessageBox.Show("Nenhuma folha selecionada para cópia.", "Aviso")
+        Return
+    End If
+
+    ' Mapear original -> cópia
+    Dim mapa As New System.Collections.Generic.Dictionary(Of Sheet, Sheet)
+
+    For Each nome As String In selectedNames
+        Dim shOriginal As Sheet = Nothing
+        Try
+            shOriginal = oSheets.Item(nome)
+        Catch ex As Exception
+            System.Windows.Forms.MessageBox.Show("Não foi possível localizar a folha: " & nome, "Erro")
+            Continue For
+        End Try
+
+        Try
+            Dim shCopia As Sheet = shOriginal.CopyTo(drawingDoc)
+            mapa.Add(shOriginal, shCopia)
+        Catch ex As Exception
+            System.Windows.Forms.MessageBox.Show("Erro ao copiar a folha '" & nome & "': " & ex.Message, "Erro")
+        End Try
+    Next
+
+    ' Reposicionar cada cópia logo após sua original
+    For Each kvp As System.Collections.Generic.KeyValuePair(Of Sheet, Sheet) In mapa
+        Dim folhaOriginal As Sheet = kvp.Key
+        Dim folhaCopia As Sheet = kvp.Value
+        Try
+            Dim nodeOriginal As BrowserNode = browserPane.GetBrowserNodeFromObject(folhaOriginal)
+            Dim nodeCopia As BrowserNode = browserPane.GetBrowserNodeFromObject(folhaCopia)
+
+            ' Reorder: before = False -> coloca AFTER o nó de referência
+            browserPane.Reorder(nodeOriginal, False, nodeCopia)
+        Catch ex As Exception
+            System.Windows.Forms.MessageBox.Show("Erro ao reposicionar cópia de '" & folhaOriginal.Name & "': " & ex.Message, "Erro")
+        End Try
+    Next
+
+    drawingDoc.Update()
+End Sub
+
+' --- Helper: tenta obter o BrowserPane do desenho (tenta "Modelo", "Model" e fallback para o primeiro) ---
+Private Function GetDrawingBrowserPane(drawingDoc As DrawingDocument) As BrowserPane
+    Try
+        Return drawingDoc.BrowserPanes.Item("Modelo")
+    Catch
+    End Try
+    Try
+        Return drawingDoc.BrowserPanes.Item("Model")
+    Catch
+    End Try
+    Try
+        Return drawingDoc.BrowserPanes.Item(1)
+    Catch
+        Return Nothing
+    End Try
+End Function
