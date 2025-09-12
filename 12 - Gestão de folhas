@@ -263,10 +263,14 @@ Sub AtualizarListaDeFolhas(sheetListView As ListView, drawingDoc As DrawingDocum
         ' Adiciona o item no ListView
         Dim item As New ListViewItem(folha.Name)
         item.SubItems.Add(status)
-        item.Checked = Not folha.ExcludeFromPrinting
+
+        ' Marcado por padrão (você pode ajustar)
+        item.Checked = False
+
         sheetListView.Items.Add(item)
     Next
 End Sub
+
 
 Function ExtrairNumeroPagina(nome As String) As String
     If nome.Contains(":") Then
