@@ -646,26 +646,49 @@ Private Function CalcularEscalaIdeal(compDef As ComponentDefinition) As Double
 End Function
 
 Sub OrdenarTreeNodes(nodes As TreeNodeCollection)
+    ' Cria lista temporária para ordenar
     Dim lista As New List(Of TreeNode)
     For Each n As TreeNode In nodes
         lista.Add(n)
     Next
 
-    ' Ordena por valor numérico extraído do texto
-    lista.Sort(Function(a As TreeNode, b As TreeNode)
-                   Dim numA As Double = ExtrairNumeroOrdenavel(a.Text)
-                   Dim numB As Double = ExtrairNumeroOrdenavel(b.Text)
-                   Return numA.CompareTo(numB)
+    ' Usa o comparador hierárquico para ordenar
+    lista.Sort(Function(a, b)
+                   Return CompararHierarquia(a.Name, b.Name)
                End Function)
 
     nodes.Clear()
+
     For Each n2 As TreeNode In lista
         nodes.Add(n2)
+
+        ' Ordena os filhos recursivamente
         If n2.Nodes.Count > 0 Then
             OrdenarTreeNodes(n2.Nodes)
         End If
     Next
 End Sub
+
+Function CompararHierarquia(a As String, b As String) As Integer
+    Dim partesA() As String = a.Split("."c)
+    Dim partesB() As String = b.Split("."c)
+
+    Dim maxLength As Integer = Math.Max(partesA.Length, partesB.Length)
+
+    For i As Integer = 0 To maxLength - 1
+        Dim valorA As Integer = If(i < partesA.Length, Integer.Parse(partesA(i)), 0)
+        Dim valorB As Integer = If(i < partesB.Length, Integer.Parse(partesB(i)), 0)
+
+        Dim resultado As Integer = valorA.CompareTo(valorB)
+        If resultado <> 0 Then
+            Return resultado
+        End If
+    Next
+
+    Return 0 ' São iguais
+End Function
+
+
 
 
 Sub InsertBaseViewUsingCopiedSheet(drawingDoc As DrawingDocument, partPath As String, itemNumber As String, labelNumber As String)
@@ -772,7 +795,7 @@ Sub AtualizarFolhasEBOM(sheetListView As ListView, TreeView As TreeView, drawing
     End If
 End Sub
 Function ExtrairNumeroOrdenavel(texto As String) As Double
-    ' Procura o primeiro número decimal no texto (ex: "1.1", "2", "10.25")
+    ' Extrai o primeiro número que encontrar no texto (ex: 1.2, 03, 10.5 etc)
     Dim regex As New System.Text.RegularExpressions.Regex("\d+(\.\d+)?")
     Dim match = regex.Match(texto)
 
@@ -783,5 +806,7 @@ Function ExtrairNumeroOrdenavel(texto As String) As Double
         End If
     End If
 
-    Return Double.MaxValue ' Se não encontrar número, joga para o final
+    ' Caso não encontre um número, retorna um valor alto para ordenar no final
+    Return Double.MaxValue
 End Function
+
