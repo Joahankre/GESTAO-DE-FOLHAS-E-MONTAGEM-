@@ -79,7 +79,7 @@ Sub Main()
     .BorderStyle = BorderStyle.FixedSingle
     
     .Columns.Add("Folha", 300, HorizontalAlignment.Left)
-    .Columns.Add("Conferência", 200, HorizontalAlignment.Left)
+    .Columns.Add("Conferência", 200, HorizontalAlignment.Center)
     .Columns.Add("QTDE PERSONALIZADA", 180, HorizontalAlignment.Center)
 End With
 
@@ -822,6 +822,12 @@ Function ObterArquivosComVistas(drawingDoc As DrawingDocument) As HashSet(Of Str
             End If
         Next
     Next
+
+    Return arquivos
+End Function
+
+
+
 
     Return arquivos
 End Function
