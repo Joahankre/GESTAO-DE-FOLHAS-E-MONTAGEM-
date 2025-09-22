@@ -1,0 +1,47 @@
+Public Sub CreateSheetMetalViewUnfolded()
+
+    ' Verifica se há um documento aberto no Inventor
+    Dim oSheetMetalDoc As PartDocument
+    oSheetMetalDoc = ThisApplication.ActiveDocument
+
+    ' Verifica se o documento é de chapa metálica
+    If oSheetMetalDoc.SubType <> "{9C464203-9BAE-11D3-8BAD-0060B0CE6BB4}" Then
+        MsgBox("Um documento de chapa metálica deve estar aberto.")
+        Exit Sub
+    End If
+
+    ' Cria um novo documento de desenho (IDW ou DWG)
+    Dim oDrawingDoc As DrawingDocument
+    oDrawingDoc = ThisApplication.Documents.Add(DocumentTypeEnum.kDrawingDocumentObject, , True)
+
+    ' Obtém a folha ativa
+    Dim oSheet As Sheet
+    oSheet = oDrawingDoc.ActiveSheet
+
+    ' Cria um NameValueMap para configurar opções da vista base
+    Dim oBaseViewOptions As NameValueMap
+    oBaseViewOptions = ThisApplication.TransientObjects.CreateNameValueMap
+
+    ' Define para utilizar a vista desdobrada (Flat Pattern)
+    oBaseViewOptions.Add("SheetMetalFoldedModel", False)
+
+    ' Geometria temporária para posicionar a vista no centro da folha
+    Dim oTG As TransientGeometry
+    oTG = ThisApplication.TransientObjects
+
+    ' Posição central da folha
+    Dim centerPoint As Point2d
+    centerPoint = oTG.CreatePoint2d(oSheet.Width / 2, oSheet.Height / 2)
+
+    ' Cria a vista base com o padrão plano
+    Dim oFlatPatternView As DrawingView
+    oFlatPatternView = oSheet.DrawingViews.AddBaseView( _
+        oSheetMetalDoc, _
+        centerPoint, _
+        1.0#, _ ' Escala da vista
+        ViewOrientationTypeEnum.kDefaultViewOrientation, _
+        DrawingViewStyleEnum.kHiddenLineDrawingViewStyle, _
+        "FlatPattern", , _
+        oBaseViewOptions)
+
+End Sub
