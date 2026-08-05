@@ -1,0 +1,343 @@
+'========================================================
+' GERAR FUROS NAS DOBRAS - FLAT PATTERN
+' iLogic - Autodesk Inventor
+'========================================================
+
+Sub Main()
+
+    Try
+
+        GerarFurosDobras()
+
+    Catch ex As Exception
+
+        MessageBox.Show(ex.Message, "Erro iLogic")
+
+    End Try
+
+End Sub
+
+
+Sub GerarFurosDobras()
+
+
+    Dim sSketchName As String = "Flat Pattern Sketch"
+    Dim sHoleName As String = "Locator Holes"
+
+
+    '-------------------------------------------------
+    ' Documento ativo
+    '-------------------------------------------------
+
+    Dim partDoc As PartDocument = ThisDoc.Document
+
+
+    If partDoc.DocumentType <> DocumentTypeEnum.kPartDocumentObject Then
+
+        MessageBox.Show(
+        "Execute esta regra em uma peça IPT.",
+        "iLogic")
+
+        Exit Sub
+
+    End If
+
+
+    Dim oDef As SheetMetalComponentDefinition =
+        partDoc.ComponentDefinition
+
+
+
+    '-------------------------------------------------
+    ' Criar Flat Pattern se não existir
+    '-------------------------------------------------
+
+    If Not oDef.HasFlatPattern Then
+
+        oDef.Unfold()
+
+    End If
+
+
+    Dim oFlatPattern As FlatPattern =
+        oDef.FlatPattern
+
+
+
+    '-------------------------------------------------
+    ' Espessura da chapa
+    '-------------------------------------------------
+
+    Dim espessuraMM As Double
+
+    Try
+
+        espessuraMM = oDef.Thickness.Value * 10
+
+    Catch
+
+        espessuraMM = 1
+
+    End Try
+
+
+
+    '-------------------------------------------------
+    ' Definir diâmetro
+    ' Inventor usa cm internamente
+    '-------------------------------------------------
+
+    Dim diametroFuro As Double
+
+
+    If espessuraMM <= 1.5 Then
+
+        diametroFuro = 0.15     '1.5 mm
+
+    Else
+
+        diametroFuro = 0.20     '2.0 mm
+
+    End If
+
+
+
+
+    '-------------------------------------------------
+    ' Apagar furos existentes
+    '-------------------------------------------------
+
+    For i As Integer =
+        oFlatPattern.Features.HoleFeatures.Count To 1 Step -1
+
+
+        Dim hole As HoleFeature =
+            oFlatPattern.Features.HoleFeatures.Item(i)
+
+
+        If hole.Name = sHoleName Then
+
+            hole.Delete()
+
+        End If
+
+
+    Next
+
+
+
+
+    '-------------------------------------------------
+    ' Apagar sketch antigo
+    '-------------------------------------------------
+
+    For i As Integer =
+        oFlatPattern.Sketches.Count To 1 Step -1
+
+
+        Dim sk As PlanarSketch =
+            oFlatPattern.Sketches.Item(i)
+
+
+        If sk.Name = sSketchName Then
+
+            sk.Delete()
+
+        End If
+
+
+    Next
+
+
+
+
+    '-------------------------------------------------
+    ' Criar Sketch no Flat Pattern
+    '-------------------------------------------------
+
+    Dim topFace As Face =
+        oFlatPattern.TopFace
+
+
+    Dim sketchFuros As PlanarSketch =
+        oFlatPattern.Sketches.Add(topFace, False)
+
+
+    sketchFuros.Name = sSketchName
+
+
+
+
+
+    '-------------------------------------------------
+    ' Preparação dos pontos
+    '-------------------------------------------------
+
+    Dim holeCenters As ObjectCollection =
+        ThisApplication.TransientObjects.CreateObjectCollection()
+
+
+    Dim tg As TransientGeometry =
+        ThisApplication.TransientGeometry
+
+
+    Dim dictPontos As New Dictionary(Of String, Boolean)
+
+
+
+
+
+    '-------------------------------------------------
+    ' Função para adicionar pontos sem duplicar
+    '-------------------------------------------------
+
+    Dim AddPoint As Action(Of Vertex) =
+        Sub(v As Vertex)
+
+
+            If v Is Nothing Then Exit Sub
+
+
+            Dim chave As String =
+                Math.Round(v.Point.X, 4).ToString &
+                "_" &
+                Math.Round(v.Point.Y, 4).ToString
+
+
+
+            If Not dictPontos.ContainsKey(chave) Then
+
+
+                dictPontos.Add(chave, True)
+
+
+
+                Dim p3D As Point =
+                    tg.CreatePoint(
+                    v.Point.X,
+                    v.Point.Y,
+                    v.Point.Z)
+
+
+
+                Dim p2D As Point2d =
+                    sketchFuros.ModelToSketchSpace(p3D)
+
+
+
+                Dim skPoint As SketchPoint =
+                    sketchFuros.SketchPoints.Add(
+                    p2D,
+                    True)
+
+
+
+                holeCenters.Add(skPoint)
+
+
+
+            End If
+
+
+        End Sub
+
+
+
+
+
+
+    '-------------------------------------------------
+    ' Dobras UP
+    '-------------------------------------------------
+
+    Dim upEdges As Edges =
+        oFlatPattern.GetEdgesOfType(
+        FlatPatternEdgeTypeEnum.kBendUpFlatPatternEdge,
+        True)
+
+
+
+    For Each edge As Edge In upEdges
+
+        AddPoint(Edge.StartVertex)
+        AddPoint(Edge.StopVertex)
+
+    Next
+
+
+
+
+
+    '-------------------------------------------------
+    ' Dobras DOWN
+    '-------------------------------------------------
+
+    Dim downEdges As Edges =
+        oFlatPattern.GetEdgesOfType(
+        FlatPatternEdgeTypeEnum.kBendDownFlatPatternEdge,
+        True)
+
+
+
+    For Each edge As Edge In downEdges
+
+        AddPoint(Edge.StartVertex)
+        AddPoint(Edge.StopVertex)
+
+    Next
+
+
+
+
+
+
+    '-------------------------------------------------
+    ' Criar furos
+    '-------------------------------------------------
+
+    If holeCenters.Count > 0 Then
+
+
+        Dim holeFeature As HoleFeature =
+            oFlatPattern.Features.HoleFeatures.AddDrilledByThroughAllExtent(
+            holeCenters,
+            diametroFuro,
+            kPositiveExtentDirection)
+
+
+
+        holeFeature.Name = sHoleName
+
+
+
+    Else
+
+
+        MessageBox.Show(
+        "Nenhum ponto encontrado nas dobras.",
+        "iLogic")
+
+
+    End If
+
+
+
+
+
+
+    '-------------------------------------------------
+    ' Sair do Flat Pattern
+    '-------------------------------------------------
+
+    oFlatPattern.ExitEdit()
+
+
+
+    MessageBox.Show(
+    "Furos de dobra criados: " &
+    holeCenters.Count.ToString,
+    "iLogic")
+
+
+
+End Sub
