@@ -1,0 +1,3191 @@
+AddReference "C:\Users\Liga\Desktop\ObjectListView.dll"
+AddReference "System.Drawing.dll"
+Imports System
+Imports System.Windows.Forms
+Imports System.Drawing
+Imports System.Linq
+Imports System.Collections.Generic
+Imports Inventor
+Imports BrightIdeasSoftware
+
+
+
+' ============================================================
+' ILOGIC - GESTÃO DE PÁGINAS DE DESENHO
+' ============================================================
+'
+' CORREÇÕES:
+'
+' 1. Todas as cores usam System.Drawing.Color
+'    para evitar conflito com Inventor.Color.
+'
+' 2. Não utiliza:
+'       HeaderForeColor
+'       HeaderFormatStyle.BackColor
+'       HeaderFormatStyle.ForeColor
+'       HeaderFormatStyle.Font
+'       HeaderFormatStyle.Alignment
+'
+'    Essas propriedades não existem em algumas versões
+'    do ObjectListView.dll.
+'
+' 3. Cabeçalhos são desenhados usando OwnerDraw do ListView.
+'
+' 4. SplitterDistance permanece exatamente:
+'
+'       splitContainer.SplitterDistance =
+'           CInt(form.Width * 0.05)
+'
+' ============================================================
+
+
+' ============================================================
+' CACHE DE FOLHA
+' ============================================================
+
+Public Class FolhaCache
+
+    Public Nome As String
+
+    Public Status As String = "🚫 Vazia"
+
+    Public QtdePersonalizada As String = "-"
+
+    Public ArquivosReferenciados As New HashSet(Of String)(
+        StringComparer.OrdinalIgnoreCase)
+
+End Class
+
+
+' ============================================================
+' CACHE DO DESENHO
+' ============================================================
+
+Public Class DrawingCache
+
+    Public MapaVistas As New Dictionary(
+        Of String,
+        List(Of String))(
+        StringComparer.OrdinalIgnoreCase)
+
+    Public Folhas As New Dictionary(
+        Of String,
+        FolhaCache)(
+        StringComparer.OrdinalIgnoreCase)
+
+    Public ArquivosComVistas As New HashSet(
+        Of String)(
+        StringComparer.OrdinalIgnoreCase)
+
+End Class
+
+
+' ============================================================
+' ITEM DA BOM
+' ============================================================
+
+Public Class BOMItem
+
+    Public Property ItemNumber As String
+
+    Public Property PartNumber As String
+
+    Public Property Status As String
+
+    Public Property Paginas As String
+
+    Public Property DocPath As String
+
+    Public Property Label As String
+
+    Public Property Filhos As New List(Of BOMItem)
+
+    Public Property Nivel As Integer
+
+End Class
+
+
+' ============================================================
+' ITEM DAS FOLHAS
+' ============================================================
+
+Public Class FolhaItem
+
+    Public Property Folha As String
+
+    Public Property Conferencia As String
+
+    Public Property QtdePersonalizada As String
+
+End Class
+
+
+' ============================================================
+' MAIN
+' ============================================================
+
+Sub Main()
+
+    ' ========================================================
+    ' VALIDAR DOCUMENTO
+    ' ========================================================
+
+    If ThisApplication.ActiveDocument Is Nothing OrElse
+       ThisApplication.ActiveDocument.DocumentType <>
+       DocumentTypeEnum.kDrawingDocumentObject Then
+
+        MessageBox.Show(
+            "Este script deve ser executado em um documento de desenho (.idw).",
+            "Documento inválido",
+            MessageBoxButtons.OK,
+            MessageBoxIcon.Warning)
+
+        Return
+
+    End If
+
+
+    Dim drawingDoc As DrawingDocument =
+        CType(
+            ThisApplication.ActiveDocument,
+            DrawingDocument)
+
+
+    ' ========================================================
+    ' BOM
+    ' ========================================================
+
+    Dim assemblyDoc As AssemblyDocument =
+        GetAssemblyFromFirstSheet(drawingDoc)
+
+
+    Dim bomRows As BOMRowsEnumerator =
+        Nothing
+
+
+    If assemblyDoc IsNot Nothing Then
+
+        bomRows =
+            GetBOMRows(drawingDoc)
+
+    End If
+
+
+    ' ========================================================
+    ' CACHE
+    ' ========================================================
+
+    Dim cache As DrawingCache =
+        ConstruirCache(drawingDoc)
+
+
+    ' ========================================================
+    ' FORM
+    ' ========================================================
+
+    Dim form As New Form()
+
+
+    form.Text =
+        "Developed by Kreimeier & Machado - Gestão de Páginas de Desenho"
+
+
+    form.Width =
+        1400
+
+
+    form.Height =
+        800
+
+
+    form.StartPosition =
+        FormStartPosition.CenterScreen
+
+
+    form.BackColor =
+        System.Drawing.Color.FromArgb(
+            245,
+            247,
+            250)
+
+
+    ' ========================================================
+    ' SPLIT CONTAINER
+    ' ========================================================
+
+    Dim splitContainer As New SplitContainer()
+
+
+    splitContainer.Dock =
+        DockStyle.Fill
+
+
+    splitContainer.Orientation =
+        Orientation.Vertical
+
+
+    splitContainer.SplitterWidth =
+        4
+
+
+    ' ========================================================
+    ' MANTER EXATAMENTE COMO SOLICITADO
+    ' ========================================================
+
+    splitContainer.SplitterDistance =
+        CInt(form.Width * 0.05)
+
+
+    splitContainer.BackColor =
+        System.Drawing.Color.FromArgb(
+            180,
+            185,
+            195)
+
+
+    form.Controls.Add(
+        splitContainer)
+
+
+    ' ========================================================
+    ' PAINEL ESQUERDO
+    ' ========================================================
+
+    Dim panelEsqLayout As New TableLayoutPanel()
+
+
+    panelEsqLayout.Dock =
+        DockStyle.Fill
+
+
+    panelEsqLayout.RowCount =
+        2
+
+
+    panelEsqLayout.ColumnCount =
+        1
+
+
+    panelEsqLayout.BackColor =
+        System.Drawing.Color.FromArgb(
+            245,
+            247,
+            250)
+
+
+    panelEsqLayout.RowStyles.Add(
+        New RowStyle(
+            SizeType.Percent,
+            100))
+
+
+    panelEsqLayout.RowStyles.Add(
+        New RowStyle(
+            SizeType.Absolute,
+            70))
+
+
+    splitContainer.Panel1.Controls.Add(
+        panelEsqLayout)
+
+
+    ' ========================================================
+    ' TREELISTVIEW
+    ' ========================================================
+
+    Dim treeView As New TreeListView()
+
+
+    treeView.Dock =
+        DockStyle.Fill
+
+
+    treeView.CheckBoxes =
+        True
+
+
+    treeView.FullRowSelect =
+        True
+
+
+    treeView.GridLines =
+        True
+
+
+    treeView.HideSelection =
+        False
+
+
+    treeView.ShowGroups =
+        False
+
+
+    treeView.View =
+        System.Windows.Forms.View.Details
+
+
+    treeView.BorderStyle =
+        BorderStyle.FixedSingle
+
+
+    treeView.UseAlternatingBackColors =
+        True
+
+
+    treeView.AlternateRowBackColor =
+        System.Drawing.Color.FromArgb(
+            248,
+            250,
+            252)
+
+
+    treeView.BackColor =
+        System.Drawing.Color.White
+
+
+    treeView.ForeColor =
+        System.Drawing.Color.FromArgb(
+            35,
+            40,
+            45)
+
+
+    treeView.MultiSelect =
+        True
+
+
+    treeView.HierarchicalCheckboxes =
+        False
+
+
+    treeView.FullRowSelect =
+        True
+
+
+    ' ========================================================
+    ' COLUNA BOM
+    ' ========================================================
+
+    Dim colBOM As New OLVColumn(
+        "BOM / ITEM",
+        "Label")
+
+
+    colBOM.Width =
+        430
+
+
+    colBOM.TextAlign =
+        HorizontalAlignment.Left
+
+
+    ' ========================================================
+    ' COLUNA STATUS
+    ' ========================================================
+
+    Dim colStatus As New OLVColumn(
+        "STATUS",
+        "Status")
+
+
+    colStatus.Width =
+        110
+
+
+    colStatus.TextAlign =
+        HorizontalAlignment.Center
+
+
+    ' ========================================================
+    ' COLUNA PÁGINAS
+    ' ========================================================
+
+    Dim colPaginas As New OLVColumn(
+        "PÁGINAS",
+        "Paginas")
+
+
+    colPaginas.Width =
+        160
+
+
+    colPaginas.TextAlign =
+        HorizontalAlignment.Center
+
+
+    treeView.Columns.Add(
+        colBOM)
+
+
+    treeView.Columns.Add(
+        colStatus)
+
+
+    treeView.Columns.Add(
+        colPaginas)
+
+
+    ' ========================================================
+    ' MODELO HIERÁRQUICO
+    ' ========================================================
+
+    treeView.CanExpandGetter =
+        Function(obj As Object)
+
+            Dim item As BOMItem =
+                TryCast(
+                    obj,
+                    BOMItem)
+
+
+            If item Is Nothing Then
+                Return False
+            End If
+
+
+            Return item.Filhos IsNot Nothing AndAlso
+                   item.Filhos.Count > 0
+
+        End Function
+
+
+    treeView.ChildrenGetter =
+        Function(obj As Object)
+
+            Dim item As BOMItem =
+                TryCast(
+                    obj,
+                    BOMItem)
+
+
+            If item Is Nothing Then
+
+                Return New List(Of Object)
+
+            End If
+
+
+            Dim resultado As New List(Of Object)
+
+
+            For Each filho As BOMItem
+                In item.Filhos
+
+                resultado.Add(
+                    filho)
+
+            Next
+
+
+            Return resultado
+
+        End Function
+
+
+    ' ========================================================
+    ' CORES DA BOM
+    ' ========================================================
+
+    treeView.RowFormatter =
+        Sub(item As OLVListItem)
+
+            Dim bomItem As BOMItem =
+                TryCast(
+                    item.RowObject,
+                    BOMItem)
+
+
+            If bomItem Is Nothing Then
+                Return
+            End If
+
+
+            ' ------------------------------------------------
+            ' PADRÃO
+            ' ------------------------------------------------
+
+            item.BackColor =
+                System.Drawing.Color.White
+
+
+            item.ForeColor =
+                System.Drawing.Color.FromArgb(
+                    45,
+                    45,
+                    45)
+
+
+            ' ------------------------------------------------
+            ' VERMELHO
+            ' ------------------------------------------------
+
+            If bomItem.Status = "🚫" Then
+
+                item.ForeColor =
+                    System.Drawing.Color.FromArgb(
+                        210,
+                        45,
+                        45)
+
+
+            ' ------------------------------------------------
+            ' VERDE
+            ' ------------------------------------------------
+
+            ElseIf bomItem.Status = "✔️" Then
+
+                item.ForeColor =
+                    System.Drawing.Color.FromArgb(
+                        30,
+                        145,
+                        75)
+
+
+            ' ------------------------------------------------
+            ' AZUL
+            ' ------------------------------------------------
+
+            ElseIf bomItem.Status = "🔵" Then
+
+                item.ForeColor =
+                    System.Drawing.Color.FromArgb(
+                        35,
+                        100,
+                        190)
+
+            End If
+
+
+        End Sub
+
+
+    ' ========================================================
+    ' CABEÇALHO TREEVIEW
+    ' ========================================================
+
+    ConfigurarCabecalhoListView(
+        treeView)
+
+
+    panelEsqLayout.Controls.Add(
+        treeView,
+        0,
+        0)
+
+
+    ' ========================================================
+    ' BOTÕES BOM
+    ' ========================================================
+
+    Dim panelEsqBottom As New FlowLayoutPanel()
+
+
+    panelEsqBottom.Dock =
+        DockStyle.Fill
+
+
+    panelEsqBottom.FlowDirection =
+        FlowDirection.LeftToRight
+
+
+    panelEsqBottom.WrapContents =
+        False
+
+
+    panelEsqBottom.AutoScroll =
+        True
+
+
+    panelEsqBottom.Padding =
+        New Padding(5)
+
+
+    panelEsqBottom.BackColor =
+        System.Drawing.Color.FromArgb(
+            235,
+            238,
+            242)
+
+
+    ' ========================================================
+    ' BOTÃO INSERIR
+    ' ========================================================
+
+    Dim btnInsert As New Button()
+
+
+    btnInsert.Text =
+        "Inserir Vistas"
+
+
+    btnInsert.Width =
+        150
+
+
+    ' ========================================================
+    ' BOTÃO EXPANDIR
+    ' ========================================================
+
+    Dim btnExpandir As New Button()
+
+
+    btnExpandir.Text =
+        "Expandir"
+
+
+    btnExpandir.Width =
+        100
+
+
+    ' ========================================================
+    ' BOTÃO CONTRAIR
+    ' ========================================================
+
+    Dim btnContrair As New Button()
+
+
+    btnContrair.Text =
+        "Contrair"
+
+
+    btnContrair.Width =
+        100
+
+
+    ' ========================================================
+    ' SELECIONAR TUDO
+    ' ========================================================
+
+    Dim btnSelecionarTudo As New Button()
+
+
+    btnSelecionarTudo.Text =
+        "Selecionar Tudo"
+
+
+    btnSelecionarTudo.Width =
+        140
+
+
+    ' ========================================================
+    ' DESMARCAR TUDO
+    ' ========================================================
+
+    Dim btnDesmarcarTudo As New Button()
+
+
+    btnDesmarcarTudo.Text =
+        "Desmarcar Tudo"
+
+
+    btnDesmarcarTudo.Width =
+        140
+
+
+    ' ========================================================
+    ' ATUALIZAR BOM
+    ' ========================================================
+
+    Dim btnAtualizarBOM As New Button()
+
+
+    btnAtualizarBOM.Text =
+        "Atualizar BOM"
+
+
+    btnAtualizarBOM.Width =
+        140
+
+
+    EstilizarBotao(
+        btnInsert,
+        System.Drawing.Color.FromArgb(40, 120, 215))
+
+
+    EstilizarBotao(
+        btnExpandir,
+        System.Drawing.Color.FromArgb(70, 130, 180))
+
+
+    EstilizarBotao(
+        btnContrair,
+        System.Drawing.Color.FromArgb(100, 110, 120))
+
+
+    EstilizarBotao(
+        btnSelecionarTudo,
+        System.Drawing.Color.FromArgb(45, 145, 85))
+
+
+    EstilizarBotao(
+        btnDesmarcarTudo,
+        System.Drawing.Color.FromArgb(190, 90, 80))
+
+
+    EstilizarBotao(
+        btnAtualizarBOM,
+        System.Drawing.Color.FromArgb(45, 120, 175))
+
+
+    panelEsqBottom.Controls.Add(
+        btnInsert)
+
+
+    panelEsqBottom.Controls.Add(
+        btnExpandir)
+
+
+    panelEsqBottom.Controls.Add(
+        btnContrair)
+
+
+    panelEsqBottom.Controls.Add(
+        btnSelecionarTudo)
+
+
+    panelEsqBottom.Controls.Add(
+        btnDesmarcarTudo)
+
+
+    panelEsqBottom.Controls.Add(
+        btnAtualizarBOM)
+
+
+    panelEsqLayout.Controls.Add(
+        panelEsqBottom,
+        0,
+        1)
+
+
+    ' ========================================================
+    ' PREENCHER BOM
+    ' ========================================================
+
+    PreencherTreeListView(
+        treeView,
+        bomRows,
+        cache)
+
+
+    ' ========================================================
+    ' PAINEL DIREITO
+    ' ========================================================
+
+    Dim panelDirLayout As New TableLayoutPanel()
+
+
+    panelDirLayout.Dock =
+        DockStyle.Fill
+
+
+    panelDirLayout.RowCount =
+        2
+
+
+    panelDirLayout.ColumnCount =
+        1
+
+
+    panelDirLayout.BackColor =
+        System.Drawing.Color.FromArgb(
+            245,
+            247,
+            250)
+
+
+    panelDirLayout.RowStyles.Add(
+        New RowStyle(
+            SizeType.Percent,
+            100))
+
+
+    panelDirLayout.RowStyles.Add(
+        New RowStyle(
+            SizeType.Absolute,
+            70))
+
+
+    splitContainer.Panel2.Controls.Add(
+        panelDirLayout)
+
+
+    ' ========================================================
+    ' OBJECTLISTVIEW
+    ' ========================================================
+
+    Dim sheetListView As New ObjectListView()
+
+
+    sheetListView.Dock =
+        DockStyle.Fill
+
+
+    sheetListView.CheckBoxes =
+        True
+
+
+    sheetListView.FullRowSelect =
+        True
+
+
+    sheetListView.GridLines =
+        True
+
+
+    sheetListView.HideSelection =
+        False
+
+
+    sheetListView.ShowGroups =
+        False
+
+
+    sheetListView.View =
+        System.Windows.Forms.View.Details
+
+
+    sheetListView.BorderStyle =
+        BorderStyle.FixedSingle
+
+
+    sheetListView.UseAlternatingBackColors =
+        True
+
+
+    sheetListView.AlternateRowBackColor =
+        System.Drawing.Color.FromArgb(
+            248,
+            250,
+            252)
+
+
+    sheetListView.BackColor =
+        System.Drawing.Color.White
+
+
+    sheetListView.ForeColor =
+        System.Drawing.Color.FromArgb(
+            45,
+            45,
+            45)
+
+
+    ' ========================================================
+    ' COLUNA FOLHA
+    ' ========================================================
+
+    Dim colFolha As New OLVColumn(
+        "Folha",
+        "Folha")
+
+
+    colFolha.Width =
+        300
+
+
+    colFolha.TextAlign =
+        HorizontalAlignment.Left
+
+
+    ' ========================================================
+    ' COLUNA CONFERÊNCIA
+    ' ========================================================
+
+    Dim colConferencia As New OLVColumn(
+        "Conferência",
+        "Conferencia")
+
+
+    colConferencia.Width =
+        220
+
+
+    colConferencia.TextAlign =
+        HorizontalAlignment.Center
+
+
+    ' ========================================================
+    ' COLUNA QTDE
+    ' ========================================================
+
+    Dim colQtde As New OLVColumn(
+        "QTDE PERSONALIZADA",
+        "QtdePersonalizada")
+
+
+    colQtde.Width =
+        180
+
+
+    colQtde.TextAlign =
+        HorizontalAlignment.Center
+
+
+    sheetListView.Columns.Add(
+        colFolha)
+
+
+    sheetListView.Columns.Add(
+        colConferencia)
+
+
+    sheetListView.Columns.Add(
+        colQtde)
+
+
+    ' ========================================================
+    ' CORES DAS FOLHAS
+    ' ========================================================
+
+    sheetListView.RowFormatter =
+        Sub(item As OLVListItem)
+
+            Dim folha As FolhaItem =
+                TryCast(
+                    item.RowObject,
+                    FolhaItem)
+
+
+            If folha Is Nothing Then
+                Return
+            End If
+
+
+            item.BackColor =
+                System.Drawing.Color.White
+
+
+            item.ForeColor =
+                System.Drawing.Color.FromArgb(
+                    45,
+                    45,
+                    45)
+
+
+            If folha.Conferencia.StartsWith(
+                "🚫") Then
+
+
+                item.ForeColor =
+                    System.Drawing.Color.FromArgb(
+                        210,
+                        45,
+                        45)
+
+
+            ElseIf folha.Conferencia.StartsWith(
+                "✔️") Then
+
+
+                item.ForeColor =
+                    System.Drawing.Color.FromArgb(
+                        30,
+                        145,
+                        75)
+
+
+            ElseIf folha.Conferencia.StartsWith(
+                "🔁") Then
+
+
+                item.ForeColor =
+                    System.Drawing.Color.FromArgb(
+                        35,
+                        100,
+                        190)
+
+            End If
+
+
+        End Sub
+
+
+    ' ========================================================
+    ' CABEÇALHO OBJECTLISTVIEW
+    ' ========================================================
+
+    ConfigurarCabecalhoListView(
+        sheetListView)
+
+
+    panelDirLayout.Controls.Add(
+        sheetListView,
+        0,
+        0)
+
+
+    ' ========================================================
+    ' BOTÕES FOLHAS
+    ' ========================================================
+
+    Dim panelDirBottom As New FlowLayoutPanel()
+
+
+    panelDirBottom.Dock =
+        DockStyle.Fill
+
+
+    panelDirBottom.FlowDirection =
+        FlowDirection.RightToLeft
+
+
+    panelDirBottom.WrapContents =
+        False
+
+
+    panelDirBottom.AutoScroll =
+        True
+
+
+    panelDirBottom.Padding =
+        New Padding(5)
+
+
+    panelDirBottom.BackColor =
+        System.Drawing.Color.FromArgb(
+            235,
+            238,
+            242)
+
+
+    Dim btnSelectAll As New Button()
+
+
+    btnSelectAll.Text =
+        "Selecionar Todas"
+
+
+    btnSelectAll.Width =
+        160
+
+
+    Dim btnDeselectAll As New Button()
+
+
+    btnDeselectAll.Text =
+        "Desmarcar Todas"
+
+
+    btnDeselectAll.Width =
+        160
+
+
+    Dim btnSelectByPrefix As New Button()
+
+
+    btnSelectByPrefix.Text =
+        "Selecionar por Prefixo"
+
+
+    btnSelectByPrefix.Width =
+        180
+
+
+    Dim btnAtualizarFolhas As New Button()
+
+
+    btnAtualizarFolhas.Text =
+        "Atualizar Folhas"
+
+
+    btnAtualizarFolhas.Width =
+        160
+
+
+    Dim btnExcluirFolhas As New Button()
+
+
+    btnExcluirFolhas.Text =
+        "Excluir Selecionadas"
+
+
+    btnExcluirFolhas.Width =
+        200
+
+
+    Dim btnCopiarFolhas As New Button()
+
+
+    btnCopiarFolhas.Text =
+        "Copiar Selecionadas"
+
+
+    btnCopiarFolhas.Width =
+        200
+
+
+    EstilizarBotao(
+        btnSelectAll,
+        System.Drawing.Color.FromArgb(45, 145, 85))
+
+
+    EstilizarBotao(
+        btnDeselectAll,
+        System.Drawing.Color.FromArgb(190, 90, 80))
+
+
+    EstilizarBotao(
+        btnSelectByPrefix,
+        System.Drawing.Color.FromArgb(90, 115, 155))
+
+
+    EstilizarBotao(
+        btnAtualizarFolhas,
+        System.Drawing.Color.FromArgb(45, 120, 175))
+
+
+    EstilizarBotao(
+        btnExcluirFolhas,
+        System.Drawing.Color.FromArgb(190, 75, 65))
+
+
+    EstilizarBotao(
+        btnCopiarFolhas,
+        System.Drawing.Color.FromArgb(75, 105, 155))
+
+
+    panelDirBottom.Controls.Add(
+        btnCopiarFolhas)
+
+
+    panelDirBottom.Controls.Add(
+        btnExcluirFolhas)
+
+
+    panelDirBottom.Controls.Add(
+        btnAtualizarFolhas)
+
+
+    panelDirBottom.Controls.Add(
+        btnSelectByPrefix)
+
+
+    panelDirBottom.Controls.Add(
+        btnDeselectAll)
+
+
+    panelDirBottom.Controls.Add(
+        btnSelectAll)
+
+
+    panelDirLayout.Controls.Add(
+        panelDirBottom,
+        0,
+        1)
+
+
+    ' ========================================================
+    ' CARREGAR FOLHAS
+    ' ========================================================
+
+    AtualizarObjectListView(
+        sheetListView,
+        drawingDoc,
+        cache)
+
+
+    ' ========================================================
+    ' ÚLTIMO ITEM TREE
+    ' ========================================================
+
+    Dim ultimoItemTree As OLVListItem =
+        Nothing
+
+
+    AddHandler treeView.MouseDown,
+        Sub(
+            sender As Object,
+            e As MouseEventArgs)
+
+            If e.Button <>
+               MouseButtons.Left Then
+
+                Return
+
+            End If
+
+
+            Dim item As OLVListItem =
+                treeView.GetItemAt(
+                    e.X,
+                    e.Y)
+
+
+            If item Is Nothing Then
+                Return
+            End If
+
+
+            Dim shiftPressed As Boolean =
+                (Control.ModifierKeys And Keys.Shift) =
+                Keys.Shift
+
+
+            If shiftPressed AndAlso
+               ultimoItemTree IsNot Nothing Then
+
+
+                SelecionarIntervaloTreeListView(
+                    treeView,
+                    ultimoItemTree,
+                    item)
+
+
+            End If
+
+
+            ultimoItemTree =
+                item
+
+        End Sub
+
+
+    ' ========================================================
+    ' ÚLTIMO ITEM FOLHAS
+    ' ========================================================
+
+    Dim ultimoItemObject As OLVListItem =
+        Nothing
+
+
+    AddHandler sheetListView.MouseDown,
+        Sub(
+            sender As Object,
+            e As MouseEventArgs)
+
+            If e.Button <>
+               MouseButtons.Left Then
+
+                Return
+
+            End If
+
+
+            Dim item As OLVListItem =
+                sheetListView.GetItemAt(
+                    e.X,
+                    e.Y)
+
+
+            If item Is Nothing Then
+                Return
+            End If
+
+
+            Dim shiftPressed As Boolean =
+                (Control.ModifierKeys And Keys.Shift) =
+                Keys.Shift
+
+
+            If shiftPressed AndAlso
+               ultimoItemObject IsNot Nothing Then
+
+
+                SelecionarIntervaloObjectListView(
+                    sheetListView,
+                    ultimoItemObject,
+                    item)
+
+
+            End If
+
+
+            ultimoItemObject =
+                item
+
+        End Sub
+
+
+    ' ========================================================
+    ' INSERIR VISTAS
+    ' ========================================================
+
+    AddHandler btnInsert.Click,
+        Sub()
+
+            Dim selecionados As List(Of BOMItem) =
+                ObterBOMSelecionados(
+                    treeView)
+
+
+            If selecionados.Count = 0 Then
+
+                MessageBox.Show(
+                    "Selecione ao menos um item na BOM.",
+                    "Aviso",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Warning)
+
+                Return
+
+            End If
+
+
+            MessageBox.Show(
+                selecionados.Count.ToString() &
+                " item(ns) selecionado(s) na BOM.",
+                "Inserir Vistas",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Information)
+
+        End Sub
+
+
+    ' ========================================================
+    ' EXPANDIR
+    ' ========================================================
+
+    AddHandler btnExpandir.Click,
+        Sub()
+
+            treeView.ExpandAll()
+
+        End Sub
+
+
+    ' ========================================================
+    ' CONTRAIR
+    ' ========================================================
+
+    AddHandler btnContrair.Click,
+        Sub()
+
+            treeView.CollapseAll()
+
+        End Sub
+
+
+    ' ========================================================
+    ' SELECIONAR BOM
+    ' ========================================================
+
+    AddHandler btnSelecionarTudo.Click,
+        Sub()
+
+            SelecionarTodosBOM(
+                treeView)
+
+        End Sub
+
+
+    ' ========================================================
+    ' DESMARCAR BOM
+    ' ========================================================
+
+    AddHandler btnDesmarcarTudo.Click,
+        Sub()
+
+            treeView.CheckedObjects =
+                New List(Of Object)
+
+        End Sub
+
+
+    ' ========================================================
+    ' ATUALIZAR BOM
+    ' ========================================================
+
+    AddHandler btnAtualizarBOM.Click,
+        Sub()
+
+            cache =
+                ConstruirCache(
+                    drawingDoc)
+
+
+            Dim novoAssembly As AssemblyDocument =
+                GetAssemblyFromFirstSheet(
+                    drawingDoc)
+
+
+            Dim novasRows As BOMRowsEnumerator =
+                Nothing
+
+
+            If novoAssembly IsNot Nothing Then
+
+                novasRows =
+                    GetBOMRows(
+                        drawingDoc)
+
+            End If
+
+
+            PreencherTreeListView(
+                treeView,
+                novasRows,
+                cache)
+
+
+            AtualizarObjectListView(
+                sheetListView,
+                drawingDoc,
+                cache)
+
+        End Sub
+
+
+    ' ========================================================
+    ' SELECIONAR TODAS FOLHAS
+    ' ========================================================
+
+    AddHandler btnSelectAll.Click,
+        Sub()
+
+            For Each item As OLVListItem
+                In sheetListView.Items
+
+                item.Checked =
+                    True
+
+            Next
+
+        End Sub
+
+
+    ' ========================================================
+    ' DESMARCAR TODAS
+    ' ========================================================
+
+    AddHandler btnDeselectAll.Click,
+        Sub()
+
+            For Each item As OLVListItem
+                In sheetListView.Items
+
+                item.Checked =
+                    False
+
+            Next
+
+        End Sub
+
+
+    ' ========================================================
+    ' SELECIONAR POR PREFIXO
+    ' ========================================================
+
+    AddHandler btnSelectByPrefix.Click,
+        Sub()
+
+            Dim prefixo As String =
+                InputBox(
+                    "Digite o prefixo:",
+                    "Selecionar por Prefixo")
+
+
+            If String.IsNullOrWhiteSpace(
+                prefixo) Then
+
+                Return
+
+            End If
+
+
+            If prefixo.Length < 2 Then
+
+                MessageBox.Show(
+                    "Digite ao menos 2 caracteres.",
+                    "Prefixo inválido",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Warning)
+
+                Return
+
+            End If
+
+
+            For Each item As OLVListItem
+                In sheetListView.Items
+
+                Dim folha As FolhaItem =
+                    TryCast(
+                        item.RowObject,
+                        FolhaItem)
+
+
+                If folha Is Nothing Then
+                    Continue For
+                End If
+
+
+                If folha.Folha.StartsWith(
+                    prefixo,
+                    StringComparison.OrdinalIgnoreCase) Then
+
+                    item.Checked =
+                        True
+
+                End If
+
+            Next
+
+        End Sub
+
+
+    ' ========================================================
+    ' ATUALIZAR FOLHAS
+    ' ========================================================
+
+    AddHandler btnAtualizarFolhas.Click,
+        Sub()
+
+            cache =
+                ConstruirCache(
+                    drawingDoc)
+
+
+            AtualizarObjectListView(
+                sheetListView,
+                drawingDoc,
+                cache)
+
+        End Sub
+
+
+    ' ========================================================
+    ' COPIAR FOLHAS
+    ' ========================================================
+
+    AddHandler btnCopiarFolhas.Click,
+        Sub()
+
+            Dim selecionadas =
+                ObterFolhasSelecionadas(
+                    sheetListView)
+
+
+            If selecionadas.Count = 0 Then
+
+                MessageBox.Show(
+                    "Nenhuma folha selecionada.",
+                    "Copiar Folhas",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Warning)
+
+                Return
+
+            End If
+
+
+            MessageBox.Show(
+                "Folhas selecionadas: " &
+                selecionadas.Count.ToString(),
+                "Copiar Folhas",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Information)
+
+        End Sub
+
+
+    ' ========================================================
+    ' EXCLUIR FOLHAS
+    ' ========================================================
+
+    AddHandler btnExcluirFolhas.Click,
+        Sub()
+
+            Dim selecionadas =
+                ObterFolhasSelecionadas(
+                    sheetListView)
+
+
+            If selecionadas.Count = 0 Then
+
+                MessageBox.Show(
+                    "Nenhuma folha selecionada.",
+                    "Excluir Folhas",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Warning)
+
+                Return
+
+            End If
+
+
+            Dim nomes As String =
+                String.Join(
+                    vbCrLf,
+                    selecionadas.ToArray())
+
+
+            Dim resposta =
+                MessageBox.Show(
+                    "Folhas selecionadas:" &
+                    vbCrLf &
+                    vbCrLf &
+                    nomes &
+                    vbCrLf &
+                    vbCrLf &
+                    "Deseja continuar?",
+                    "Excluir Folhas",
+                    MessageBoxButtons.YesNo,
+                    MessageBoxIcon.Warning)
+
+
+            If resposta <>
+               DialogResult.Yes Then
+
+                Return
+
+            End If
+
+
+            For i As Integer =
+                drawingDoc.Sheets.Count To 1 Step -1
+
+                Dim folha As Sheet =
+                    drawingDoc.Sheets.Item(i)
+
+
+                If selecionadas.Contains(
+                    folha.Name,
+                    StringComparer.OrdinalIgnoreCase) Then
+
+                    Try
+
+                        folha.Delete()
+
+                    Catch ex As Exception
+
+                        MessageBox.Show(
+                            "Erro ao excluir '" &
+                            folha.Name &
+                            "':" &
+                            vbCrLf &
+                            ex.Message,
+                            "Erro",
+                            MessageBoxButtons.OK,
+                            MessageBoxIcon.Error)
+
+                    End Try
+
+                End If
+
+            Next
+
+
+            drawingDoc.Update()
+
+
+            cache =
+                ConstruirCache(
+                    drawingDoc)
+
+
+            AtualizarObjectListView(
+                sheetListView,
+                drawingDoc,
+                cache)
+
+        End Sub
+
+
+    ' ========================================================
+    ' MOSTRAR FORM
+    ' ========================================================
+
+    form.ShowDialog()
+
+End Sub
+
+
+' ============================================================
+' CONFIGURAR CABEÇALHO
+' ============================================================
+'
+' IMPORTANTE:
+'
+' Não utiliza HeaderFormatStyle.
+' Não utiliza HeaderForeColor.
+'
+' O desenho do cabeçalho é feito diretamente pelo ListView.
+'
+' ============================================================
+
+Sub ConfigurarCabecalhoListView(
+    listView As ListView)
+
+    listView.OwnerDraw =
+        True
+
+
+    AddHandler listView.DrawColumnHeader,
+        Sub(
+            sender As Object,
+            e As DrawListViewColumnHeaderEventArgs)
+
+            Dim fundo As System.Drawing.Color =
+                System.Drawing.Color.FromArgb(
+                    35,
+                    55,
+                    75)
+
+
+            Dim texto As System.Drawing.Color =
+                System.Drawing.Color.White
+
+
+            Using brushFundo As New SolidBrush(
+                fundo)
+
+                e.Graphics.FillRectangle(
+                    brushFundo,
+                    e.Bounds)
+
+            End Using
+
+
+            Using brushTexto As New SolidBrush(
+                texto)
+
+                Using fonte As New Font(
+                    "Segoe UI",
+                    9.0F,
+                    FontStyle.Bold)
+
+                    Dim sf As New StringFormat()
+
+
+                    sf.Alignment =
+                        StringAlignment.Center
+
+
+                    sf.LineAlignment =
+                        StringAlignment.Center
+
+
+                    e.Graphics.DrawString(
+                        e.Header.Text,
+                        fonte,
+                        brushTexto,
+                        e.Bounds,
+                        sf)
+
+                End Using
+
+            End Using
+
+
+            Using pen As New Pen(
+                System.Drawing.Color.FromArgb(
+                    20,
+                    35,
+                    50))
+
+                e.Graphics.DrawRectangle(
+                    pen,
+                    e.Bounds.X,
+                    e.Bounds.Y,
+                    e.Bounds.Width - 1,
+                    e.Bounds.Height - 1)
+
+            End Using
+
+        End Sub
+
+
+    AddHandler listView.DrawItem,
+        Sub(
+            sender As Object,
+            e As DrawListViewItemEventArgs)
+
+            If listView.View <>
+               System.Windows.Forms.View.Details Then
+
+                e.DrawDefault =
+                    True
+
+            End If
+
+        End Sub
+
+
+    AddHandler listView.DrawSubItem,
+        Sub(
+            sender As Object,
+            e As DrawListViewSubItemEventArgs)
+
+            e.DrawDefault =
+                True
+
+        End Sub
+
+End Sub
+
+
+' ============================================================
+' ESTILIZAR BOTÃO
+' ============================================================
+
+Sub EstilizarBotao(
+    botao As Button,
+    cor As System.Drawing.Color)
+
+    botao.BackColor =
+        cor
+
+
+    botao.ForeColor =
+        System.Drawing.Color.White
+
+
+    botao.FlatStyle =
+        FlatStyle.Flat
+
+
+    botao.FlatAppearance.BorderSize =
+        0
+
+
+    botao.Font =
+        New Font(
+            "Segoe UI",
+            9.0F,
+            FontStyle.Bold)
+
+
+    botao.Height =
+        38
+
+
+    botao.Margin =
+        New Padding(
+            4)
+
+End Sub
+
+
+' ============================================================
+' PREENCHE TREELISTVIEW
+' ============================================================
+
+Sub PreencherTreeListView(
+    treeView As TreeListView,
+    bomRows As BOMRowsEnumerator,
+    cache As DrawingCache)
+
+    treeView.BeginUpdate()
+
+    Try
+
+        treeView.Roots =
+            Nothing
+
+
+        If bomRows Is Nothing Then
+            Return
+        End If
+
+
+        Dim roots As New List(Of BOMItem)
+
+
+        For Each row As BOMRow
+            In bomRows
+
+            Dim item As BOMItem =
+                CriarBOMItem(
+                    Row,
+                    cache,
+                    0)
+
+
+            If item IsNot Nothing Then
+
+                roots.Add(
+                    item)
+
+            End If
+
+        Next
+
+
+        roots.Sort(
+            Function(a, b)
+
+                Return CompararHierarquia(
+                    a.ItemNumber,
+                    b.ItemNumber)
+
+            End Function)
+
+
+        treeView.Roots =
+            roots
+
+
+        treeView.ExpandAll()
+
+    Finally
+
+        treeView.EndUpdate()
+
+    End Try
+
+End Sub
+
+
+' ============================================================
+' CRIAR ITEM BOM
+' ============================================================
+
+Function CriarBOMItem(
+    row As BOMRow,
+    cache As DrawingCache,
+    nivel As Integer) As BOMItem
+
+    Try
+
+        If row.ComponentDefinitions IsNot Nothing AndAlso
+           row.ComponentDefinitions.Count > 0 Then
+
+            Dim defComp =
+                row.ComponentDefinitions.Item(1)
+
+
+            If TypeOf defComp Is PartComponentDefinition Then
+
+                If CType(
+                    defComp,
+                    PartComponentDefinition).IsContentMember Then
+
+                    Return Nothing
+
+                End If
+
+            End If
+
+
+            If defComp.BOMStructure <>
+               BOMStructureEnum.kNormalBOMStructure Then
+
+                Return Nothing
+
+            End If
+
+        End If
+
+
+        Dim docPath As String =
+            ""
+
+
+        Dim partName As String =
+            ""
+
+
+        Try
+
+            If row.ComponentDefinitions IsNot Nothing AndAlso
+               row.ComponentDefinitions.Count > 0 Then
+
+                Dim doc As Document =
+                    row.ComponentDefinitions.Item(1).Document
+
+
+                docPath =
+                    doc.FullFileName
+
+
+                Try
+
+                    partName =
+                        CStr(
+                            doc.PropertySets.
+                            Item(
+                                "Design Tracking Properties").
+                            Item(
+                                "Part Number").Value)
+
+                Catch
+
+                    partName =
+                        ""
+
+                End Try
+
+            End If
+
+        Catch
+
+        End Try
+
+
+        Dim itemNumber As String =
+            row.ItemNumber
+
+
+        Dim pages As New List(Of String)
+
+
+        Dim nomesFolhas As List(Of String) =
+            Nothing
+
+
+        If Not String.IsNullOrWhiteSpace(
+            docPath) AndAlso
+           cache IsNot Nothing AndAlso
+           cache.MapaVistas.TryGetValue(
+               docPath,
+               nomesFolhas) Then
+
+            For Each nomeFolha As String
+                In nomesFolhas
+
+                Dim pageNum As String
+
+
+                If nomeFolha.Contains(":") Then
+
+                    pageNum =
+                        nomeFolha.Substring(
+                            nomeFolha.LastIndexOf(":") + 1).
+                        PadLeft(
+                            2,
+                            "0"c)
+
+                Else
+
+                    pageNum =
+                        "01"
+
+                End If
+
+
+                If Not pages.Contains(
+                    pageNum) Then
+
+                    pages.Add(
+                        pageNum)
+
+                End If
+
+            Next
+
+        End If
+
+
+        pages.Sort()
+
+
+        Dim status As String
+
+
+        Dim pageText As String =
+            ""
+
+
+        If pages.Count = 0 Then
+
+            status =
+                "🚫"
+
+        ElseIf pages.Count = 1 Then
+
+            status =
+                "✔️"
+
+
+            pageText =
+                FormatarPaginas(
+                    pages)
+
+        Else
+
+            status =
+                "🔵"
+
+
+            pageText =
+                FormatarPaginas(
+                    pages)
+
+        End If
+
+
+        Dim labelNumber As String =
+            If(
+                partName <> "",
+                partName,
+                itemNumber)
+
+
+        Dim label As String
+
+
+        If pageText <> "" Then
+
+            label =
+                "(" &
+                status &
+                ") " &
+                itemNumber &
+                " – " &
+                labelNumber &
+                " [Pág: " &
+                pageText &
+                "]"
+
+        Else
+
+            label =
+                "(" &
+                status &
+                ") " &
+                itemNumber &
+                " – " &
+                labelNumber
+
+        End If
+
+
+        Dim item As New BOMItem()
+
+
+        item.ItemNumber =
+            itemNumber
+
+
+        item.PartNumber =
+            partName
+
+
+        item.Status =
+            status
+
+
+        item.Paginas =
+            pageText
+
+
+        item.DocPath =
+            docPath
+
+
+        item.Label =
+            label
+
+
+        item.Nivel =
+            nivel
+
+
+        If row.ChildRows IsNot Nothing AndAlso
+           row.ChildRows.Count > 0 Then
+
+            For Each childRow As BOMRow
+                In row.ChildRows
+
+                Dim filho As BOMItem =
+                    CriarBOMItem(
+                        childRow,
+                        cache,
+                        nivel + 1)
+
+
+                If filho IsNot Nothing Then
+
+                    item.Filhos.Add(
+                        filho)
+
+                End If
+
+            Next
+
+        End If
+
+
+        item.Filhos.Sort(
+            Function(a, b)
+
+                Return CompararHierarquia(
+                    a.ItemNumber,
+                    b.ItemNumber)
+
+            End Function)
+
+
+        Return item
+
+    Catch
+
+        Return Nothing
+
+    End Try
+
+End Function
+
+
+' ============================================================
+' ATUALIZAR OBJECTLISTVIEW
+' ============================================================
+
+Sub AtualizarObjectListView(
+    listView As ObjectListView,
+    drawingDoc As DrawingDocument,
+    cache As DrawingCache)
+
+    listView.BeginUpdate()
+
+    Try
+
+        listView.ClearObjects()
+
+
+        If drawingDoc Is Nothing Then
+            Return
+        End If
+
+
+        If cache Is Nothing Then
+
+            cache =
+                ConstruirCache(
+                    drawingDoc)
+
+        End If
+
+
+        Dim objetos As New List(Of FolhaItem)
+
+
+        For Each folha As Sheet
+            In drawingDoc.Sheets
+
+            Dim status As String =
+                "🚫 Vazia"
+
+
+            Dim qtde As String =
+                "-"
+
+
+            Dim folhaInfo As FolhaCache =
+                Nothing
+
+
+            If cache.Folhas.TryGetValue(
+                folha.Name,
+                folhaInfo) Then
+
+                status =
+                    folhaInfo.Status
+
+
+                qtde =
+                    folhaInfo.QtdePersonalizada
+
+            End If
+
+
+            Dim qtdeFormatada As String =
+                qtde
+
+
+            Dim valorInt As Integer
+
+
+            If Integer.TryParse(
+                qtde,
+                valorInt) Then
+
+                qtdeFormatada =
+                    valorInt.ToString(
+                        "D2")
+
+            End If
+
+
+            objetos.Add(
+                New FolhaItem With {
+                    .Folha =
+                        folha.Name,
+                    .Conferencia =
+                        status,
+                    .QtdePersonalizada =
+                        qtdeFormatada})
+
+        Next
+
+
+        listView.SetObjects(
+            objetos)
+
+    Finally
+
+        listView.EndUpdate()
+
+    End Try
+
+End Sub
+
+
+' ============================================================
+' OBTÉM FOLHAS SELECIONADAS
+' ============================================================
+
+Function ObterFolhasSelecionadas(
+    listView As ObjectListView) As List(Of String)
+
+    Dim resultado As New List(Of String)
+
+
+    For Each item As OLVListItem
+        In listView.CheckedItems
+
+        Dim folha As FolhaItem =
+            TryCast(
+                item.RowObject,
+                FolhaItem)
+
+
+        If folha IsNot Nothing Then
+
+            resultado.Add(
+                folha.Folha)
+
+        End If
+
+    Next
+
+
+    Return resultado
+
+End Function
+
+
+' ============================================================
+' OBTÉM BOM SELECIONADA
+' ============================================================
+
+Function ObterBOMSelecionados(
+    treeView As TreeListView) As List(Of BOMItem)
+
+    Dim resultado As New List(Of BOMItem)
+
+
+    For Each obj As Object
+        In treeView.CheckedObjects
+
+        Dim item As BOMItem =
+            TryCast(
+                obj,
+                BOMItem)
+
+
+        If item IsNot Nothing Then
+
+            resultado.Add(
+                item)
+
+        End If
+
+    Next
+
+
+    Return resultado
+
+End Function
+
+
+' ============================================================
+' SELECIONAR TODA BOM
+' ============================================================
+
+Sub SelecionarTodosBOM(
+    treeView As TreeListView)
+
+    Dim todos As New List(Of Object)
+
+
+    For Each root As Object
+        In treeView.Roots
+
+        AdicionarObjetosRecursivos(
+            root,
+            todos)
+
+    Next
+
+
+    treeView.CheckedObjects =
+        todos
+
+End Sub
+
+
+' ============================================================
+' ADICIONAR OBJETOS RECURSIVAMENTE
+' ============================================================
+
+Sub AdicionarObjetosRecursivos(
+    obj As Object,
+    lista As List(Of Object))
+
+    If obj Is Nothing Then
+        Return
+    End If
+
+
+    lista.Add(
+        obj)
+
+
+    Dim item As BOMItem =
+        TryCast(
+            obj,
+            BOMItem)
+
+
+    If item Is Nothing Then
+        Return
+    End If
+
+
+    If item.Filhos Is Nothing Then
+        Return
+    End If
+
+
+    For Each filho As BOMItem
+        In item.Filhos
+
+        AdicionarObjetosRecursivos(
+            filho,
+            lista)
+
+    Next
+
+End Sub
+
+
+' ============================================================
+' SHIFT - TREE
+' ============================================================
+
+Sub SelecionarIntervaloTreeListView(
+    listView As TreeListView,
+    primeiro As OLVListItem,
+    ultimo As OLVListItem)
+
+    If primeiro Is Nothing OrElse
+       ultimo Is Nothing Then
+
+        Return
+
+    End If
+
+
+    Dim indiceInicial As Integer =
+        primeiro.Index
+
+
+    Dim indiceFinal As Integer =
+        ultimo.Index
+
+
+    If indiceInicial > indiceFinal Then
+
+        Dim temp As Integer =
+            indiceInicial
+
+
+        indiceInicial =
+            indiceFinal
+
+
+        indiceFinal =
+            temp
+
+    End If
+
+
+    For i As Integer =
+        indiceInicial To indiceFinal
+
+        If i >= 0 AndAlso
+           i < listView.Items.Count Then
+
+            Dim item As OLVListItem =
+                listView.Items(i)
+
+
+            If Not listView.CheckedObjects.Contains(
+                item.RowObject) Then
+
+                Dim objetosAtuais As New List(Of Object)
+
+
+                For Each obj As Object
+                    In listView.CheckedObjects
+
+                    objetosAtuais.Add(
+                        obj)
+
+                Next
+
+
+                objetosAtuais.Add(
+                    item.RowObject)
+
+
+                listView.CheckedObjects =
+                    objetosAtuais
+
+            End If
+
+        End If
+
+    Next
+
+End Sub
+
+
+' ============================================================
+' SHIFT - OBJECTLISTVIEW
+' ============================================================
+
+Sub SelecionarIntervaloObjectListView(
+    listView As ObjectListView,
+    primeiro As OLVListItem,
+    ultimo As OLVListItem)
+
+    If primeiro Is Nothing OrElse
+       ultimo Is Nothing Then
+
+        Return
+
+    End If
+
+
+    Dim indiceInicial As Integer =
+        primeiro.Index
+
+
+    Dim indiceFinal As Integer =
+        ultimo.Index
+
+
+    If indiceInicial > indiceFinal Then
+
+        Dim temp As Integer =
+            indiceInicial
+
+
+        indiceInicial =
+            indiceFinal
+
+
+        indiceFinal =
+            temp
+
+    End If
+
+
+    For i As Integer =
+        indiceInicial To indiceFinal
+
+        listView.Items(i).Checked =
+            True
+
+    Next
+
+End Sub
+
+
+' ============================================================
+' CACHE
+' ============================================================
+
+Function ConstruirCache(
+    drawingDoc As DrawingDocument) As DrawingCache
+
+    Dim cache As New DrawingCache
+
+
+    If drawingDoc Is Nothing Then
+        Return cache
+    End If
+
+
+    ' ========================================================
+    ' PRIMEIRA PASSAGEM
+    ' ========================================================
+
+    For Each folha As Sheet
+        In drawingDoc.Sheets
+
+        Dim folhaInfo As New FolhaCache
+
+
+        folhaInfo.Nome =
+            folha.Name
+
+
+        Dim primeiroDocumentoComPropriedade As Boolean =
+            False
+
+
+        For Each vista As DrawingView
+            In folha.DrawingViews
+
+            Dim doc As Document =
+                Nothing
+
+
+            Try
+
+                doc =
+                    vista.
+                    ReferencedDocumentDescriptor.
+                    ReferencedDocument
+
+            Catch
+
+                Continue For
+
+            End Try
+
+
+            If doc Is Nothing Then
+                Continue For
+            End If
+
+
+            Dim caminho As String =
+                ""
+
+
+            Try
+
+                caminho =
+                    doc.FullFileName
+
+            Catch
+
+                Continue For
+
+            End Try
+
+
+            If String.IsNullOrWhiteSpace(
+                caminho) Then
+
+                Continue For
+
+            End If
+
+
+            folhaInfo.ArquivosReferenciados.Add(
+                caminho)
+
+
+            cache.ArquivosComVistas.Add(
+                caminho)
+
+
+            Dim nomesFolhas As List(Of String) =
+                Nothing
+
+
+            If Not cache.MapaVistas.TryGetValue(
+                caminho,
+                nomesFolhas) Then
+
+                nomesFolhas =
+                    New List(Of String)
+
+
+                cache.MapaVistas.Add(
+                    caminho,
+                    nomesFolhas)
+
+            End If
+
+
+            If Not nomesFolhas.Contains(
+                folha.Name,
+                StringComparer.OrdinalIgnoreCase) Then
+
+                nomesFolhas.Add(
+                    folha.Name)
+
+            End If
+
+
+            ' =================================================
+            ' QTDE PERSONALIZADA
+            ' =================================================
+
+            If Not primeiroDocumentoComPropriedade Then
+
+                Try
+
+                    Dim props As PropertySet =
+                        doc.PropertySets.Item(
+                            "Inventor User Defined Properties")
+
+
+                    Try
+
+                        Dim prop As Inventor.Property =
+                            props.Item(
+                                "QTDE PERSONALIZADA")
+
+
+                        If prop IsNot Nothing AndAlso
+                           prop.Value IsNot Nothing Then
+
+                            folhaInfo.QtdePersonalizada =
+                                prop.Value.ToString()
+
+                        End If
+
+                    Catch
+
+                    End Try
+
+
+                    primeiroDocumentoComPropriedade =
+                        True
+
+                Catch
+
+                End Try
+
+            End If
+
+        Next
+
+
+        cache.Folhas(
+            folha.Name) =
+            folhaInfo
+
+    Next
+
+
+    ' ========================================================
+    ' SEGUNDA PASSAGEM
+    ' ========================================================
+
+    For Each folha As Sheet
+        In drawingDoc.Sheets
+
+        Dim folhaInfo As FolhaCache =
+            Nothing
+
+
+        If Not cache.Folhas.TryGetValue(
+            folha.Name,
+            folhaInfo) Then
+
+            Continue For
+
+        End If
+
+
+        If folhaInfo.ArquivosReferenciados.Count = 0 Then
+
+            folhaInfo.Status =
+                "🚫 Vazia"
+
+
+            Continue For
+
+        End If
+
+
+        Dim todasPaginas As New List(Of String)
+
+
+        For Each arquivo As String
+            In folhaInfo.ArquivosReferenciados
+
+            Dim nomesFolhas As List(Of String) =
+                Nothing
+
+
+            If cache.MapaVistas.TryGetValue(
+                arquivo,
+                nomesFolhas) Then
+
+                todasPaginas.AddRange(
+                    nomesFolhas)
+
+            End If
+
+        Next
+
+
+        Dim paginasNumericas As New List(Of Integer)
+
+
+        For Each nomeFolha As String
+            In todasPaginas
+
+            Dim numero As Integer
+
+
+            If Integer.TryParse(
+                ExtrairNumeroPagina(nomeFolha),
+                numero) Then
+
+                If Not paginasNumericas.Contains(
+                    numero) Then
+
+                    paginasNumericas.Add(
+                        numero)
+
+                End If
+
+            End If
+
+        Next
+
+
+        paginasNumericas.Sort()
+
+
+        If paginasNumericas.Count = 0 Then
+
+            folhaInfo.Status =
+                "🚫"
+
+        Else
+
+            Dim paginasFormatadas As New List(Of String)
+
+
+            For Each numero As Integer
+                In paginasNumericas
+
+                paginasFormatadas.Add(
+                    numero.ToString())
+
+            Next
+
+
+            Dim textoPaginas As String =
+                String.Join(
+                    ". ",
+                    paginasFormatadas.ToArray())
+
+
+            If paginasNumericas.Count = 1 Then
+
+                folhaInfo.Status =
+                    "✔️ Pág: " &
+                    textoPaginas
+
+            Else
+
+                folhaInfo.Status =
+                    "🔁 Pág: " &
+                    textoPaginas
+
+            End If
+
+        End If
+
+    Next
+
+
+    Return cache
+
+End Function
+
+
+' ============================================================
+' ASSEMBLY
+' ============================================================
+
+Function GetAssemblyFromFirstSheet(
+    drawingDoc As DrawingDocument) As AssemblyDocument
+
+    Try
+
+        If drawingDoc.Sheets.Count = 0 Then
+            Return Nothing
+        End If
+
+
+        Dim firstSheet As Sheet =
+            drawingDoc.Sheets.Item(1)
+
+
+        If firstSheet.DrawingViews.Count = 0 Then
+            Return Nothing
+        End If
+
+
+        Dim baseDrawingView As DrawingView =
+            firstSheet.DrawingViews.Item(1)
+
+
+        Dim refDocDescriptor =
+            baseDrawingView.
+            ReferencedDocumentDescriptor
+
+
+        If refDocDescriptor Is Nothing Then
+            Return Nothing
+        End If
+
+
+        Dim refDoc =
+            refDocDescriptor.ReferencedDocument
+
+
+        If refDoc IsNot Nothing AndAlso
+           refDoc.DocumentType =
+           DocumentTypeEnum.kAssemblyDocumentObject Then
+
+            Return CType(
+                refDoc,
+                AssemblyDocument)
+
+        End If
+
+    Catch
+
+    End Try
+
+
+    Return Nothing
+
+End Function
+
+
+' ============================================================
+' BOM
+' ============================================================
+
+Function GetBOMRows(
+    drawingDoc As DrawingDocument) As BOMRowsEnumerator
+
+    Try
+
+        If drawingDoc.Sheets.Count = 0 OrElse
+           drawingDoc.Sheets.Item(1).
+           DrawingViews.Count = 0 Then
+
+            Return Nothing
+
+        End If
+
+
+        Dim refDoc As Document =
+            drawingDoc.
+            Sheets.Item(1).
+            DrawingViews.Item(1).
+            ReferencedDocumentDescriptor.
+            ReferencedDocument
+
+
+        If Not TypeOf refDoc Is AssemblyDocument Then
+            Return Nothing
+        End If
+
+
+        Dim asm As AssemblyDocument =
+            CType(
+                refDoc,
+                AssemblyDocument)
+
+
+        Dim bom As BOM =
+            asm.ComponentDefinition.BOM
+
+
+        bom.StructuredViewEnabled =
+            True
+
+
+        bom.StructuredViewFirstLevelOnly =
+            False
+
+
+        For Each bomView As BOMView
+            In bom.BOMViews
+
+            If BOMView.ViewType =
+               BOMViewTypeEnum.kStructuredBOMViewType Then
+
+                Return BOMView.BOMRows
+
+            End If
+
+        Next
+
+    Catch
+
+    End Try
+
+
+    Return Nothing
+
+End Function
+
+
+' ============================================================
+' EXTRAI NÚMERO DA PÁGINA
+' ============================================================
+
+Function ExtrairNumeroPagina(
+    nome As String) As String
+
+    If nome.Contains(":") Then
+
+        Return nome.Substring(
+            nome.IndexOf(":") + 1).
+            Trim().
+            PadLeft(
+                2,
+                "0"c)
+
+    End If
+
+
+    Return nome
+
+End Function
+
+
+' ============================================================
+' FORMATAR PÁGINAS
+' ============================================================
+
+Function FormatarPaginas(
+    paginas As List(Of String)) As String
+
+    If paginas Is Nothing OrElse
+       paginas.Count = 0 Then
+
+        Return ""
+
+    End If
+
+
+    Dim nums As New List(Of Integer)
+
+
+    For Each p As String
+        In paginas
+
+        Dim n As Integer
+
+
+        If Integer.TryParse(
+            p,
+            n) Then
+
+            nums.Add(
+                n)
+
+        End If
+
+    Next
+
+
+    If nums.Count = 0 Then
+        Return ""
+    End If
+
+
+    nums =
+        nums.
+        Distinct().
+        OrderBy(
+            Function(n) n).
+        ToList()
+
+
+    Dim resultado As New List(Of String)
+
+
+    For Each n As Integer
+        In nums
+
+        resultado.Add(
+            n.ToString())
+
+    Next
+
+
+    Return String.Join(
+        ". ",
+        resultado)
+
+End Function
+
+
+' ============================================================
+' COMPARAR HIERARQUIA
+' ============================================================
+
+Function CompararHierarquia(
+    a As String,
+    b As String) As Integer
+
+    Dim partesA() As String =
+        a.Split("."c)
+
+
+    Dim partesB() As String =
+        b.Split("."c)
+
+
+    Dim maxLength As Integer =
+        Math.Max(
+            partesA.Length,
+            partesB.Length)
+
+
+    For i As Integer =
+        0 To maxLength - 1
+
+        Dim valorA As Integer =
+            0
+
+
+        Dim valorB As Integer =
+            0
+
+
+        If i < partesA.Length Then
+
+            Integer.TryParse(
+                partesA(i),
+                valorA)
+
+        End If
+
+
+        If i < partesB.Length Then
+
+            Integer.TryParse(
+                partesB(i),
+                valorB)
+
+        End If
+
+
+        Dim resultado As Integer =
+            valorA.CompareTo(
+                valorB)
+
+
+        If resultado <> 0 Then
+
+            Return resultado
+
+        End If
+
+    Next
+
+
+    Return 0
+
+End Function
