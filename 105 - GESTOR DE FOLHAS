@@ -220,7 +220,7 @@ Sub Main()
 
 
     splitContainer.SplitterDistance =
-        CInt(form.Width * 0.45)
+        CInt(form.Width * 0.05)
 
 
     form.Controls.Add(
@@ -2954,8 +2954,7 @@ Function FormatarPaginas(
     Dim resultado As New List(Of String)
 
 
-    For Each n As Integer
-        In nums
+    For Each n As Integer In nums
 
 
         resultado.Add(
