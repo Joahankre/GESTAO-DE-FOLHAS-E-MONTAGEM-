@@ -1,0 +1,122 @@
+https://forums.autodesk.com/t5/inventor-programming-forum/routine-to-search-for-unused-ipt-iam/td-p/14067489?utm_source=chatgpt.com
+
+' ============================================================
+' FindUnusedIPTs.iLogicVb
+' Finds all .ipt files in the workspace NOT referenced by the
+' currently open assembly (including all subassembly levels).
+' Compatible with Inventor 2024
+' ============================================================
+
+Sub Main()
+
+    Dim oApp As Inventor.Application = ThisApplication
+    Dim oDoc As Inventor.Document = oApp.ActiveDocument
+
+    ' Must be an assembly
+    If oDoc.DocumentType <> Inventor.DocumentTypeEnum.kAssemblyDocumentObject Then
+        MsgBox("Please open a top-level assembly (.iam) first.", vbExclamation, "Wrong document type")
+        Exit Sub
+    End If
+
+    ' --- Get workspace root path ---
+    Dim oProj As Inventor.DesignProject = oApp.DesignProjectManager.ActiveDesignProject
+    Dim workspacePath As String = oProj.WorkspacePath
+
+    If Not System.IO.Directory.Exists(workspacePath) Then
+        MsgBox("Workspace folder not found: " & workspacePath, vbCritical, "Error")
+        Exit Sub
+    End If
+
+    ' --- Recursively collect all referenced IPT paths from the assembly ---
+    Dim usedIpts As New System.Collections.Generic.HashSet(Of String)(StringComparer.OrdinalIgnoreCase)
+    CollectUsedIPTs(oDoc, usedIpts)
+
+    ' --- Scan workspace for all .ipt files ---
+    Dim allWorkspaceIpts As String() = System.IO.Directory.GetFiles(workspacePath, "*.ipt", System.IO.SearchOption.AllDirectories)
+
+    ' --- Find unused ones ---
+    Dim unused As New System.Collections.Generic.List(Of String)
+    For Each filePath As String In allWorkspaceIpts
+        If Not usedIpts.Contains(filePath) Then
+            unused.Add(filePath)
+        End If
+    Next
+
+    ' --- Report results ---
+    If unused.Count = 0 Then
+        MsgBox("All .ipt files in the workspace are used in this assembly.", vbInformation, "No unused parts found")
+    Else
+        Dim sb As New System.Text.StringBuilder
+        sb.AppendLine("Found " & unused.Count & " unused .ipt file(s) in workspace:")
+        sb.AppendLine(String.Empty)
+        For Each f As String In unused
+            Dim rel As String = f.Replace(workspacePath, "").TrimStart(System.IO.Path.DirectorySeparatorChar)
+            sb.AppendLine("  " & rel)
+        Next
+        Dim msg As String = sb.ToString()
+        If msg.Length > 2000 Then
+            Dim outFile As String = System.IO.Path.Combine(workspacePath, "UnusedIPTs_Report.txt")
+            System.IO.File.WriteAllText(outFile, msg)
+            MsgBox("Results too large for dialog. Report saved to:" & vbCrLf & outFile, vbInformation, "Unused IPTs")
+        Else
+            MsgBox(msg, vbInformation, "Unused .ipt files")
+        End If
+    End If
+
+End Sub
+
+' ============================================================
+' Recursively walks all components in an assembly document and
+' adds referenced .ipt full paths to the HashSet.
+' ============================================================
+Sub CollectUsedIPTs(ByVal doc As Inventor.Document, ByVal usedSet As System.Collections.Generic.HashSet(Of String))
+
+    If doc.DocumentType <> Inventor.DocumentTypeEnum.kAssemblyDocumentObject Then
+        Exit Sub
+    End If
+
+    Dim oAsmDef As Inventor.AssemblyComponentDefinition =
+        CType(doc, Inventor.AssemblyDocument).ComponentDefinition
+
+    For Each oOcc As Inventor.ComponentOccurrence In oAsmDef.Occurrences
+        ProcessOccurrence(oOcc, usedSet)
+    Next
+
+End Sub
+
+' ============================================================
+' Processes a single ComponentOccurrence recursively.
+' Skips any occurrence that cannot be accessed (suppressed,
+' content center, unresolved references, etc.)
+' ============================================================
+Sub ProcessOccurrence(ByVal occ As Inventor.ComponentOccurrence, ByVal usedSet As System.Collections.Generic.HashSet(Of String))
+
+    Try
+        ' Skip suppressed components
+        If occ.Suppressed Then Exit Sub
+
+        Dim subDoc As Inventor.Document = occ.Definition.Document
+
+        Select Case subDoc.DocumentType
+
+            Case Inventor.DocumentTypeEnum.kPartDocumentObject
+                Dim filePath As String = subDoc.FullFileName
+                If filePath.EndsWith(".ipt", StringComparison.OrdinalIgnoreCase) Then
+                    usedSet.Add(filePath)
+                End If
+
+            Case Inventor.DocumentTypeEnum.kAssemblyDocumentObject
+                Dim oSubAsmDef As Inventor.AssemblyComponentDefinition =
+                    CType(subDoc, Inventor.AssemblyDocument).ComponentDefinition
+                For Each subOcc As Inventor.ComponentOccurrence In oSubAsmDef.Occurrences
+                    ProcessOccurrence(subOcc, usedSet)
+                Next
+
+        End Select
+
+    Catch ex As Exception
+        ' Skip this occurrence silently — it may be a content center part,
+        ' suppressed component, or unresolved reference
+    End Try
+
+End Sub
