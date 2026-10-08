@@ -1,0 +1,258 @@
+' ============================================================
+' FindUnusedInventorFiles.iLogicVb
+'
+' Procura arquivos .IPT e .IAM que NÃO são referenciados
+' pelo documento Inventor atualmente aberto.
+'
+' Baseado na abordagem apresentada no fórum Autodesk:
+' Document.File.AllReferencedFiles
+' HashSet(Of String)
+' Concat()
+' Except()
+'
+' Compatível com Inventor 2024
+'
+' IMPORTANTE:
+' Esta regra NÃO EXCLUI nenhum arquivo.
+' Ela somente cria um relatório:
+'
+'    UnUsedFiles.txt
+'
+' na pasta Workspace do projeto ativo.
+' ============================================================
+
+Sub Main
+
+    ' --------------------------------------------------------
+    ' Documento atualmente aberto
+    ' --------------------------------------------------------
+
+    Dim oDoc As Inventor.Document = ThisApplication.ActiveDocument
+
+    If oDoc Is Nothing Then
+        MsgBox("Nenhum documento Inventor está aberto.", _
+               vbExclamation, _
+               "Arquivo não encontrado")
+        Return
+    End If
+
+
+    ' --------------------------------------------------------
+    ' O documento precisa estar salvo
+    ' --------------------------------------------------------
+
+    If oDoc.FileSaveCounter = 0 Then
+        MsgBox("O documento precisa ser salvo antes de executar esta regra.", _
+               vbExclamation, _
+               "Documento não salvo")
+        Return
+    End If
+
+
+    ' --------------------------------------------------------
+    ' COLETAR TODOS OS ARQUIVOS REFERENCIADOS
+    '
+    ' AllReferencedFiles inclui os arquivos referenciados
+    ' pelo documento, incluindo os níveis abaixo da montagem.
+    ' --------------------------------------------------------
+
+    Dim oAllRefFiles As HashSet(Of String) = New HashSet(Of String)( _
+        StringComparer.OrdinalIgnoreCase)
+
+    For Each oRefFile As Inventor.File In oDoc.File.AllReferencedFiles
+
+        If oRefFile Is Nothing Then
+            Continue For
+        End If
+
+        Dim sRefFile As String = oRefFile.FullFileName
+
+        If Not String.IsNullOrWhiteSpace(sRefFile) Then
+            oAllRefFiles.Add(sRefFile)
+        End If
+
+    Next
+
+
+    ' --------------------------------------------------------
+    ' GARANTIR QUE O PRÓPRIO DOCUMENTO ATIVO TAMBÉM
+    ' SEJA CONSIDERADO COMO UTILIZADO
+    '
+    ' Isso evita que a própria montagem principal apareça
+    ' como "não utilizada".
+    ' --------------------------------------------------------
+
+    Dim sActiveFile As String = oDoc.FullFileName
+
+    If Not String.IsNullOrWhiteSpace(sActiveFile) Then
+        oAllRefFiles.Add(sActiveFile)
+    End If
+
+
+    ' --------------------------------------------------------
+    ' OBTER A PASTA WORKSPACE DO PROJETO ATIVO
+    ' --------------------------------------------------------
+
+    Dim sWSPath As String = _
+        ThisApplication.DesignProjectManager.ActiveDesignProject.WorkspacePath
+
+    If String.IsNullOrWhiteSpace(sWSPath) Then
+        MsgBox("O projeto ativo não possui uma pasta Workspace válida.", _
+               vbExclamation, _
+               "Workspace")
+        Return
+    End If
+
+    If Not System.IO.Directory.Exists(sWSPath) Then
+        MsgBox("A pasta Workspace não foi encontrada:" & vbCrLf & _
+               sWSPath, _
+               vbCritical, _
+               "Workspace inexistente")
+        Return
+    End If
+
+
+    ' --------------------------------------------------------
+    ' PROCURAR TODOS OS .IAM NO WORKSPACE
+    ' --------------------------------------------------------
+
+    Dim oAll_IAMs() As String = _
+        System.IO.Directory.GetFiles( _
+            sWSPath, _
+            "*.iam", _
+            System.IO.SearchOption.AllDirectories)
+
+
+    ' --------------------------------------------------------
+    ' PROCURAR TODOS OS .IPT NO WORKSPACE
+    ' --------------------------------------------------------
+
+    Dim oAll_IPTs() As String = _
+        System.IO.Directory.GetFiles( _
+            sWSPath, _
+            "*.ipt", _
+            System.IO.SearchOption.AllDirectories)
+
+
+    ' --------------------------------------------------------
+    ' COMBINAR IAM + IPT
+    ' --------------------------------------------------------
+
+    Dim oAll_Inv_Files As IEnumerable(Of String) = _
+        oAll_IAMs.Concat(oAll_IPTs)
+
+
+    ' --------------------------------------------------------
+    ' COMPARAR:
+    '
+    ' TODOS OS ARQUIVOS
+    '        MENOS
+    ' ARQUIVOS REFERENCIADOS
+    '
+    ' Resultado = arquivos potencialmente não utilizados.
+    ' --------------------------------------------------------
+
+    Dim oUnUsedFiles As IEnumerable(Of String) = _
+        oAll_Inv_Files.Except(oAllRefFiles, _
+                              StringComparer.OrdinalIgnoreCase)
+
+
+    ' --------------------------------------------------------
+    ' CONSTRUIR RELATÓRIO
+    ' --------------------------------------------------------
+
+    Dim oReport As New System.Text.StringBuilder()
+
+    oReport.AppendLine("============================================================")
+    oReport.AppendLine("RELATÓRIO DE ARQUIVOS NÃO UTILIZADOS")
+    oReport.AppendLine("============================================================")
+    oReport.AppendLine("")
+    oReport.AppendLine("Documento analisado:")
+    oReport.AppendLine(oDoc.FullFileName)
+    oReport.AppendLine("")
+    oReport.AppendLine("Workspace:")
+    oReport.AppendLine(sWSPath)
+    oReport.AppendLine("")
+    oReport.AppendLine("Arquivos referenciados encontrados: " & _
+                       oAllRefFiles.Count)
+    oReport.AppendLine("")
+    oReport.AppendLine("Arquivos .IPT/.IAM não encontrados nas referências:")
+    oReport.AppendLine("------------------------------------------------------------")
+
+
+    ' --------------------------------------------------------
+    ' CONTADOR
+    ' --------------------------------------------------------
+
+    Dim iUnused As Integer = 0
+
+
+    ' --------------------------------------------------------
+    ' ESCREVER ARQUIVOS NÃO UTILIZADOS
+    ' --------------------------------------------------------
+
+    For Each sUnUsedFile As String In oUnUsedFiles
+
+        oReport.AppendLine(sUnUsedFile)
+
+        iUnused += 1
+
+    Next
+
+
+    ' --------------------------------------------------------
+    ' RESUMO
+    ' --------------------------------------------------------
+
+    oReport.AppendLine("")
+    oReport.AppendLine("------------------------------------------------------------")
+    oReport.AppendLine("TOTAL DE ARQUIVOS POTENCIALMENTE NÃO UTILIZADOS: " & _
+                       iUnused)
+    oReport.AppendLine("------------------------------------------------------------")
+    oReport.AppendLine("")
+    oReport.AppendLine("ATENÇÃO:")
+    oReport.AppendLine("Este relatório NÃO significa necessariamente que os")
+    oReport.AppendLine("arquivos podem ser excluídos com segurança.")
+    oReport.AppendLine("")
+    oReport.AppendLine("Revise a lista antes de excluir qualquer arquivo.")
+
+
+    ' --------------------------------------------------------
+    ' CAMINHO DO RELATÓRIO
+    ' --------------------------------------------------------
+
+    Dim sTextFile As String = _
+        System.IO.Path.Combine(sWSPath, "UnUsedFiles.txt")
+
+
+    ' --------------------------------------------------------
+    ' GRAVAR RELATÓRIO
+    ' --------------------------------------------------------
+
+    System.IO.File.WriteAllText( _
+        sTextFile, _
+        oReport.ToString())
+
+
+    ' --------------------------------------------------------
+    ' ABRIR O RELATÓRIO NO BLOCO DE NOTAS
+    ' --------------------------------------------------------
+
+    Try
+
+        Process.Start(sTextFile)
+
+    Catch
+
+        MsgBox( _
+            "Relatório criado com sucesso:" & vbCrLf & vbCrLf & _
+            sTextFile, _
+            vbInformation, _
+            "Arquivos não utilizados")
+
+    End Try
+
+
+End Sub
+
+
