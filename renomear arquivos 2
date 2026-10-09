@@ -1,0 +1,332 @@
+Class ThisRule
+	'global variables
+	
+	'list used to replace references
+	Dim oOld_to_New_List As New ArrayList 
+	'list that holds all the original files
+	Dim oFilesToDeleteList As New ArrayList 
+	'drawings folder
+	Dim oDrawingFolder As String = "Rysunki"
+	'input box default
+	Dim oDefault As String = "33-3333"
+	'switch to turn on/off iproperty part number updates
+	Dim oUpdatePartNumbers As Boolean = True
+End Class 
+
+Sub main
+	
+	'check to make sure there are not other files loaded
+	'since this code works with the loaded files
+	If ThisApplication.Documents.VisibleDocuments.Count > 1 Then
+		MessageBox.Show("More than one open file was detected." _
+		& vbLf & "please open only the top level assembly to use this rule.", " iLogic ")
+		Return 'exit rule
+	End If
+	
+	If Right(UCase(ThisDoc.Document.FullFileName), 4) <> ".IAM" Then
+		MessageBox.Show("This rule expects an assembly file." _
+		& vbLf & "please open only the top level assembly to use this rule.", " iLogic ")
+		Return 'exit rule
+	End If	
+	
+	'get user input
+	oPrefix = InputBox("Enter Prefix", "iLogic", oDefault)
+	
+	'make sure the input is not empty
+	If oPrefix = "" Then
+		Return 'exit rule
+	End If
+	
+	'existing drawings folder
+	oFolder = ThisDoc.Path & "\" & oDrawingFolder
+	'new drawings folder
+	oNewDrawingFolder = ThisDoc.Path & "\" & oDrawingFolder & "\" 
+	'new models folder
+	oNewModelsFolder = ThisDoc.Path & "\" 
+
+	'make sure drawing folder exists
+	If System.IO.Directory.Exists(oFolder) = False Then
+		GoTo SkipDrawings :
+	Else
+		'create new drawings folder
+		If Not System.IO.Directory.Exists(oNewDrawingFolder) Then
+	    	System.IO.Directory.CreateDirectory(oNewDrawingFolder)
+		End If	
+	End If
+	
+
+	oFilesToDeleteList.Add(ThisApplication.ActiveDocument.FullFileName)
+		
+	Dim oNVM As NameValueMap 
+    oNVM = ThisApplication.TransientObjects.CreateNameValueMap
+	
+	'get the files from the drawing folder
+	Dim oFiles() As String = System.IO.Directory.GetFiles(oFolder)
+
+	'open all files In the drawings folder
+	For Each oFile As String In oFiles
+		'opens invisibly
+		ThisApplication.Documents.OpenWithOptions(oFile, oNVM, False)  		
+		oFilesToDeleteList.Add(oFile)
+	Next
+	
+
+	SkipDrawings :
+	
+	'add names to list
+	For Each oDoc2 In ThisDoc.Document.AllReferencedDocuments		
+		oFilesToDeleteList.Add(oDoc2.FullFileName)
+	Next
+
+	'looks at all the files open in Inventor's memory
+	i = 1 'drawing increment
+	j = 1 'not used here, but function is looking for it
+	For Each oDoc2 In ThisApplication.Documents
+		
+		oPathName = oDoc2.FullDocumentName
+		oExt = Right(oPathName, 4)
+				
+		'process drawing documents
+		If UCase(oExt) = ".IDW" Then
+			
+			'Logger.Info(oPathName)
+			
+			'call function to get new name suffix
+			oSuffix = SetName(i, j,oExt)
+			i=i+1
+			oNewName = oPrefix + oSuffix
+
+			oNewPathName = oNewDrawingFolder & oNewName & oExt
+			
+			If System.IO.File.Exists(oNewPathName) = True Then
+				Kill(oNewPathName) 'delete file if it exists
+			End If
+			
+			'create new drawing file
+			ThisApplication.StatusBarText = "Saving " & oNewPathName
+			Try
+				oOld_to_New_List.Add(oNewPathName & "|" & oPathName)
+				oDoc2.SaveAs(oNewPathName, False)			
+			Catch
+				'Logger.Debug(oNewPathName & " not saved")
+			End Try
+		'Logger.Debug("*******************")	
+		End If		
+
+		'call sub to save out all documents and replace references
+		Call LookAtRefDoc(oDoc2, oPrefix, oNewModelsFolder)
+
+	Next 'ThisApplication.Documents
+
+	InventorVb.DocumentUpdate()
+	
+	Call Save_and_Update (ThisApplication.ActiveDocument)
+
+	Call DeleteOldFiles
+	
+	'open folder
+	Process.Start(ThisDoc.Path) 
+
+End Sub
+
+Sub LookAtRefDoc(oTargetDoc As Document, oPrefix As String, oNewModelsFolder As String)
+	'Logger.Trace("Into LookAtRefDoc sub")
+
+	'Logger.Info(oTargetDoc.fullfilename)
+	i = 1 'parts increment
+	j = 1 'assembly increment
+
+	'process the top level assembly if it is the active document
+	If ThisDoc.Document.FullFileName = oTargetDoc.fullfilename _
+		And ThisDoc.Document.DocumentType = _
+		Inventor.DocumentTypeEnum.kAssemblyDocumentObject Then
+
+		oPathName = oTargetDoc.fullfilename	
+		oExt = Right(oPathName, 4)
+		oTargetExt = oExt
+		oSuffix = SetName(i, j, oExt)
+		'Logger.Info(oSuffix)
+		oNewName = oPrefix + oSuffix		
+	
+		'new path name
+		oNewPathName = oNewModelsFolder & oNewName & ".iam"
+		'Logger.Info( oNewPathName)
+
+		'save new file if it does not already exist
+		If System.IO.File.Exists(oNewPathName) = False Then
+			ThisApplication.StatusBarText = "Saving " & oNewPathName
+			oOld_to_New_List.Add(oNewPathName & "|" & oPathName)
+	    	oTargetDoc.SaveAs(oNewPathName, False)
+		End If		
+		
+		j = j + 1
+		
+	End If
+
+
+	Dim oDoc As Document 
+	For Each oDoc In oTargetDoc.AllReferencedDocuments
+		oPathName = oDoc.FullDocumentName
+		'Logger.Debug("Ref file: " &  oPathName)
+
+		If oPathName.Contains("REFERENCE_PART") = False _
+			And oPathName.Contains("CATALOG_PART") = False Then
+			'get the extension
+			oExt = Right(oPathName, 4)
+			
+			oSuffix = SetName(i, j, oExt)	
+			oNewName = oPrefix + oSuffix
+			
+			If UCase(oExt) = ".IPT" Then
+				i = i + 1
+			ElseIf UCase(oExt) = ".IAM" Then
+				j = j + 1
+			End If		
+
+			'new path name
+			oNewPathName = oNewModelsFolder & oNewName & oExt
+			'save new file if it does not already exist
+			If System.IO.File.Exists(oNewPathName) = False Then
+				ThisApplication.StatusBarText = "Saving " & oNewPathName
+				oOld_to_New_List.Add(oNewPathName & "|" & oPathName)
+		    	oDoc.SaveAs(oNewPathName, False)
+			End If
+			
+				
+			For Each oFileDesc In oTargetDoc.File.ReferencedFileDescriptors
+				If oFileDesc.FullFileName = oDoc.FullFileName Then
+					Try					
+					'call function to get new name
+					oNewFile = Old_New(oPathName)
+					'replace reference
+					oFileDesc.ReplaceReference(oNewFile)
+					ThisApplication.StatusBarText = "New reference " & oNewFile
+					'Logger.Debug("New Ref file: " & oNewPathName)
+					Catch  	ex As Exception 
+						'MessageBox.Show(ex.Message, "ilogic")
+						'Logger.Error(ex.Message)
+					End Try
+				End If
+			Next 'ReferencedFileDescriptors			
+		End If	
+		
+		'handle sub assembly references
+		If oDoc.DocumentType = _
+			Inventor.DocumentTypeEnum.kAssemblyDocumentObject Then
+			'call sub to save out all documents and replace references
+			'Logger.Info("***********************")
+			'Logger.Info("***********************")
+			'Logger.Info(oDoc.FullFileName)	
+			Call LookAtRefDoc(oDoc, oPrefix, oNewModelsFolder)
+		End If
+	Next  'ReferencedDocuments
+End Sub
+
+
+
+Function SetName(i As Integer, j As Integer, oExt As String)
+	'this sets the increment suffix for the new file names
+	'set new suffix
+	If UCase(oExt) = ".IPT" Or  UCase(oExt) = ".IDW" Then
+		oSuffix = IIf(i < 10, "-000" + CStr(i),  "-00" +  CStr(i))
+		'i = i + 1
+	ElseIf UCase(oExt) = ".IAM" Then
+		oSuffix = IIf(j < 10, "-B00" + CStr(j), "-B0" & CStr(j))
+		'j = j + 1
+	End If			
+
+		Return oSuffix
+	
+End Function
+
+Function Old_New (oPathName As String)
+	'this is used to hand the old and new names to 
+	'the replace reference function
+	Dim oSplit As String()
+	
+	For Each oItem In oOld_to_New_List
+		oSplit = oItem.Split("|")
+		If oSplit(1) = oPathName Then
+			Return oSplit(0) 
+		End If
+	Next
+	
+	
+End Function
+
+Sub Save_and_Update (oDoc As Document)
+	
+	'save all files
+	oDoc.DisplayName = "" 'remove browser display name overrides
+	oName = Left(oDoc.DisplayName, Len(oDoc.DisplayName)-4)
+	If oUpdatePartNumbers = True Then
+		oDoc.PropertySets.Item("Design Tracking Properties").Item _
+		("Part Number").Value = oName		
+	End If
+
+	Dim oRefDoc As Document
+	Dim oRefDocDesc As DocumentDescriptor
+
+	' make all the referenced documents dirty so they'll save
+	For Each oRefDocDesc In oDoc.ReferencedDocumentDescriptors
+	    oRefDoc = oRefDocDesc.ReferencedDocument
+	    oRefDoc.Dirty = True
+		oRefDoc.DisplayName = "" 'remove browser display name overrides
+		oName = Left(oRefDoc.displayname, Len(oRefDoc.displayname)-4)
+		If oUpdatePartNumbers = True Then
+			oRefDoc.PropertySets.Item("Design Tracking Properties").Item _
+			("Part Number").Value = oName
+		End If
+		
+		If oDoc.DocumentType = _
+			Inventor.DocumentTypeEnum.kAssemblyDocumentObject Then
+			Call Save_and_Update(oRefDoc)
+		End If
+	Next
+
+	' Save the document and its dependents.
+	Call oDoc.Save2(True)
+	
+	'Logger.Info("Files in memory " & ThisApplication.Documents.Count )
+
+	'Try to close any documents that might have been left open 	
+	Dim tDoc As Document
+	For Each tDoc In ThisApplication.Documents
+		Try 
+			'Logger.Info(tDoc.FullFileName)
+			If tDoc.FullFileName <> ThisDoc.Document.FullFileName Then			
+				Try 
+					If tDoc.Dirty = True Then 
+						'Logger.Info("Saving...." & tDoc.FullFileName)
+						tDoc.Save 
+					End If						
+					tDoc.Close
+				Catch 
+				End Try
+			End If
+		Catch ex As Exception 
+			'Logger.Error(ex.Message)
+		End Try
+
+	Next
+	
+End Sub
+
+Sub DeleteOldFiles
+	'Logger.Info("Files in memory " & ThisApplication.Documents.Count)
+	
+	oDelete = MessageBox.Show("New Files created and references replaced" _
+	& vbLf & vbLf & "Do you want to delete the old files?", "ilogic ",MessageBoxButtons.YesNo)
+	
+	If oDelete = vbYes Then		
+		For Each oItem In oFilesToDeleteList	
+			If oItem.Contains("REFERENCE_PART") = False _
+			And oItem.Contains("CATALOG_PART") = False Then
+			
+			'Logger.Debug("Deleting: " & oItem)
+			System.IO.File.Delete(oItem)	
+			End If
+		Next
+	End If
+	'Logger.Info("Files in memory " & ThisApplication.Documents.Count)
+End Sub
