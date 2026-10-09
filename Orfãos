@@ -1,0 +1,292 @@
+' ============================================================
+' FindUnusedInventorFiles.iLogicVb
+'
+' Inventor 2024
+'
+' Localiza arquivos .IPT e .IAM não referenciados pelo
+' documento ativo e move os resultados para a pasta "Órfãos".
+'
+' IGNORA todas as pastas chamadas "OldVersions".
+'
+' Gera o relatório UnUsedFiles.txt no Workspace.
+' ============================================================
+
+Sub Main
+
+    Dim oDoc As Inventor.Document = ThisApplication.ActiveDocument
+
+    If oDoc Is Nothing Then
+        MsgBox("Nenhum documento Inventor está aberto.", vbExclamation, "iLogic")
+        Return
+    End If
+
+    If String.IsNullOrWhiteSpace(oDoc.FullFileName) Then
+        MsgBox("Salve o documento antes de executar esta regra.", vbExclamation, "iLogic")
+        Return
+    End If
+
+    ' --------------------------------------------------------
+    ' REFERÊNCIAS DO DOCUMENTO ATIVO
+    ' --------------------------------------------------------
+
+    Dim oAllRefFiles As New System.Collections.Generic.HashSet(Of String)( _
+        StringComparer.OrdinalIgnoreCase)
+
+    For Each oRefFile As Inventor.File In oDoc.File.AllReferencedFiles
+
+        If oRefFile IsNot Nothing Then
+            Dim sRefFile As String = oRefFile.FullFileName
+
+            If Not String.IsNullOrWhiteSpace(sRefFile) Then
+                oAllRefFiles.Add(sRefFile)
+            End If
+        End If
+
+    Next
+
+    oAllRefFiles.Add(oDoc.FullFileName)
+
+    ' --------------------------------------------------------
+    ' WORKSPACE
+    ' --------------------------------------------------------
+
+    Dim sWSPath As String = _
+        ThisApplication.DesignProjectManager.ActiveDesignProject.WorkspacePath
+
+    If String.IsNullOrWhiteSpace(sWSPath) OrElse _
+       Not System.IO.Directory.Exists(sWSPath) Then
+
+        MsgBox("Workspace inválido ou inexistente.", vbExclamation, "iLogic")
+        Return
+    End If
+
+    ' --------------------------------------------------------
+    ' PASTA DE DESTINO: ÓRFÃOS
+    ' --------------------------------------------------------
+
+    Dim sOrfaosPath As String = System.IO.Path.Combine(sWSPath, "Órfãos")
+
+    ' --------------------------------------------------------
+    ' LOCALIZAR IPT E IAM
+    ' IGNORANDO OldVersions E A PRÓPRIA PASTA ÓRFÃOS
+    ' --------------------------------------------------------
+
+    Dim oAll_Inv_Files As New System.Collections.Generic.List(Of String)
+    Dim oDirs As New System.Collections.Generic.Stack(Of String)
+
+    oDirs.Push(sWSPath)
+
+    While oDirs.Count > 0
+
+        Dim sCurrentDir As String = oDirs.Pop()
+
+        For Each sFile As String In System.IO.Directory.GetFiles(sCurrentDir)
+
+            Dim sExt As String = System.IO.Path.GetExtension(sFile)
+
+            If String.Equals(sExt, ".iam", StringComparison.OrdinalIgnoreCase) OrElse _
+               String.Equals(sExt, ".ipt", StringComparison.OrdinalIgnoreCase) Then
+
+                oAll_Inv_Files.Add(sFile)
+
+            End If
+
+        Next
+
+        For Each sSubDir As String In System.IO.Directory.GetDirectories(sCurrentDir)
+
+            Dim sFolderName As String = System.IO.Path.GetFileName(sSubDir)
+
+            If String.Equals(sFolderName, "OldVersions", StringComparison.OrdinalIgnoreCase) Then
+                Continue For
+            End If
+
+            If String.Equals(sSubDir.TrimEnd("\"c), _
+                             sOrfaosPath.TrimEnd("\"c), _
+                             StringComparison.OrdinalIgnoreCase) Then
+                Continue For
+            End If
+
+            oDirs.Push(sSubDir)
+
+        Next
+
+    End While
+
+    ' --------------------------------------------------------
+    ' IDENTIFICAR ARQUIVOS POTENCIALMENTE NÃO UTILIZADOS
+    ' --------------------------------------------------------
+
+    Dim oUnUsedFiles As IEnumerable(Of String) = _
+        oAll_Inv_Files.Except( _
+            oAllRefFiles, _
+            StringComparer.OrdinalIgnoreCase)
+
+    Dim oUnusedList As New System.Collections.Generic.List(Of String)
+
+    For Each sFile As String In oUnUsedFiles
+        oUnusedList.Add(sFile)
+    Next
+
+    If oUnusedList.Count = 0 Then
+
+        MsgBox("Nenhum arquivo potencialmente não utilizado foi encontrado.", _
+               vbInformation, "iLogic")
+        Return
+
+    End If
+
+    ' --------------------------------------------------------
+    ' CONFIRMAR MOVIMENTAÇÃO
+    ' --------------------------------------------------------
+
+    Dim sConfirm As String = _
+        "Foram encontrados " & oUnusedList.Count & _
+        " arquivos potencialmente não utilizados." & vbCrLf & vbCrLf & _
+        "Eles serão movidos para:" & vbCrLf & _
+        sOrfaosPath & vbCrLf & vbCrLf & _
+        "A movimentação pode quebrar referências de outras montagens." & _
+        vbCrLf & vbCrLf & _
+        "Deseja continuar?"
+
+    If MsgBox(sConfirm, vbYesNo Or vbExclamation Or vbDefaultButton2, _
+              "Confirmar movimentação") <> vbYes Then
+        Return
+    End If
+
+    ' --------------------------------------------------------
+    ' CRIAR PASTA ÓRFÃOS
+    ' --------------------------------------------------------
+
+    Try
+        System.IO.Directory.CreateDirectory(sOrfaosPath)
+    Catch ex As Exception
+        MsgBox("Não foi possível criar a pasta Órfãos:" & vbCrLf & _
+               ex.Message, vbCritical, "iLogic")
+        Return
+    End Try
+
+    ' --------------------------------------------------------
+    ' PREPARAR RELATÓRIO
+    ' --------------------------------------------------------
+
+    Dim oReport As New System.Text.StringBuilder()
+
+    oReport.AppendLine("============================================================")
+    oReport.AppendLine("RELATÓRIO DE ARQUIVOS POTENCIALMENTE NÃO UTILIZADOS")
+    oReport.AppendLine("============================================================")
+    oReport.AppendLine("Documento analisado: " & oDoc.FullFileName)
+    oReport.AppendLine("Workspace: " & sWSPath)
+    oReport.AppendLine("Destino: " & sOrfaosPath)
+    oReport.AppendLine("Pastas OldVersions: ignoradas")
+    oReport.AppendLine("")
+    oReport.AppendLine("ARQUIVOS ENCONTRADOS E RESULTADOS DA MOVIMENTAÇÃO")
+    oReport.AppendLine("------------------------------------------------------------")
+
+    Dim iMoved As Integer = 0
+    Dim iErrors As Integer = 0
+
+    ' --------------------------------------------------------
+    ' MOVER ARQUIVOS PARA ÓRFÃOS
+    ' PRESERVAR NOMES; NÃO SOBRESCREVER DESTINOS EXISTENTES
+    ' --------------------------------------------------------
+
+    For Each sSource As String In oUnusedList
+
+        Dim sFileName As String = System.IO.Path.GetFileName(sSource)
+        Dim sDestination As String = System.IO.Path.Combine(sOrfaosPath, sFileName)
+
+        Try
+
+            If System.IO.File.Exists(sDestination) OrElse _
+               System.IO.Directory.Exists(sDestination) Then
+
+                oReport.AppendLine("NÃO MOVIDO - DESTINO JÁ EXISTE:")
+                oReport.AppendLine("Origem: " & sSource)
+                oReport.AppendLine("Destino: " & sDestination)
+                oReport.AppendLine("")
+                iErrors += 1
+                Continue For
+
+            End If
+
+            System.IO.File.Move(sSource, sDestination)
+
+            oReport.AppendLine("MOVIDO:")
+            oReport.AppendLine("Origem: " & sSource)
+            oReport.AppendLine("Destino: " & sDestination)
+            oReport.AppendLine("")
+            iMoved += 1
+
+        Catch ex As Exception
+
+            oReport.AppendLine("ERRO AO MOVER:")
+            oReport.AppendLine("Arquivo: " & sSource)
+            oReport.AppendLine("Motivo: " & ex.Message)
+            oReport.AppendLine("")
+            iErrors += 1
+
+        End Try
+
+    Next
+
+    ' --------------------------------------------------------
+    ' RESUMO
+    ' --------------------------------------------------------
+
+    oReport.AppendLine("============================================================")
+    oReport.AppendLine("RESUMO")
+    oReport.AppendLine("Total identificado: " & oUnusedList.Count)
+    oReport.AppendLine("Movidos com sucesso: " & iMoved)
+    oReport.AppendLine("Não movidos / erros: " & iErrors)
+    oReport.AppendLine("")
+    oReport.AppendLine("Nenhum arquivo foi excluído.")
+    oReport.AppendLine("A análise considera as referências do documento ativo.")
+    oReport.AppendLine("Outras montagens podem utilizar arquivos movidos.")
+    oReport.AppendLine("============================================================")
+
+    ' --------------------------------------------------------
+    ' SALVAR RELATÓRIO NO WORKSPACE
+    ' --------------------------------------------------------
+
+    Dim sTextFile As String = _
+        System.IO.Path.Combine(sWSPath, "UnUsedFiles.txt")
+
+    Try
+
+        System.IO.File.WriteAllText( _
+            sTextFile, _
+            oReport.ToString(), _
+            System.Text.Encoding.UTF8)
+
+    Catch ex As Exception
+
+        MsgBox("A movimentação terminou, mas não foi possível gravar " & _
+               "o relatório:" & vbCrLf & ex.Message, _
+               vbExclamation, "iLogic")
+
+        Return
+
+    End Try
+
+    ' --------------------------------------------------------
+    ' EXIBIR RESULTADO
+    ' --------------------------------------------------------
+
+    MsgBox( _
+        "Processo concluído." & vbCrLf & vbCrLf & _
+        "Arquivos identificados: " & oUnusedList.Count & vbCrLf & _
+        "Arquivos movidos: " & iMoved & vbCrLf & _
+        "Não movidos / erros: " & iErrors & vbCrLf & vbCrLf & _
+        "Pasta de destino:" & vbCrLf & sOrfaosPath & vbCrLf & vbCrLf & _
+        "Relatório:" & vbCrLf & sTextFile, _
+        vbInformation, _
+        "Arquivos órfãos")
+
+    Try
+        System.Diagnostics.Process.Start(sTextFile)
+    Catch
+        ' O relatório já foi salvo.
+    End Try
+
+End Sub
