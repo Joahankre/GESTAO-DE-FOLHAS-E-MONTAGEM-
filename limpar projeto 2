@@ -1,0 +1,825 @@
+' ============================================================
+' FindUnusedInventorFiles.iLogicVb
+' Autodesk Inventor 2024
+'
+' IDENTIFICA IPT E IAM NÃO REFERENCIADOS PELA MONTAGEM MESTRE
+'
+' DESTINO:
+'     Workspace\Órfãos
+'
+' CARACTERÍSTICAS:
+' - Ignora pastas OldVersions em qualquer nível.
+' - Ignora a pasta Órfãos durante a pesquisa.
+' - Preserva a estrutura relativa das pastas.
+' - Não sobrescreve arquivos existentes.
+' - Não exclui arquivos.
+' - Solicita confirmação antes da movimentação.
+' - Salva UnUsedFiles.txt no Workspace.
+' - Exibe o relatório em formulário Windows Forms.
+' - Não utiliza Path.GetRelativePath.
+' - Evita ambiguidades entre Inventor.Path e System.IO.Path.
+' - Não utiliza tipos System.Drawing explicitamente.
+'
+' IMPORTANTE:
+' A análise considera as referências da montagem mestre.
+' Outras montagens independentes podem utilizar os arquivos.
+' Recomenda-se testar primeiro em uma cópia do Workspace.
+' ============================================================
+
+Sub Main()
+
+    ' ========================================================
+    ' DOCUMENTO ATIVO
+    ' ========================================================
+
+    Dim oDoc As Inventor.Document = ThisApplication.ActiveDocument
+
+    If oDoc Is Nothing Then
+
+        System.Windows.Forms.MessageBox.Show( _
+            "Nenhum documento Inventor está aberto.", _
+            "iLogic", _
+            System.Windows.Forms.MessageBoxButtons.OK, _
+            System.Windows.Forms.MessageBoxIcon.Warning)
+
+        Return
+
+    End If
+
+    ' ========================================================
+    ' VALIDAR CAMINHO DO DOCUMENTO
+    ' ========================================================
+
+    If String.IsNullOrWhiteSpace(oDoc.FullFileName) Then
+
+        System.Windows.Forms.MessageBox.Show( _
+            "Salve a montagem mestre antes de executar a regra.", _
+            "Documento não salvo", _
+            System.Windows.Forms.MessageBoxButtons.OK, _
+            System.Windows.Forms.MessageBoxIcon.Warning)
+
+        Return
+
+    End If
+
+    ' ========================================================
+    ' EXIGIR MONTAGEM IAM
+    ' ========================================================
+
+    If oDoc.DocumentType <> _
+       Inventor.DocumentTypeEnum.kAssemblyDocumentObject Then
+
+        System.Windows.Forms.MessageBox.Show( _
+            "O documento ativo não é uma montagem (.IAM)." & _
+            vbCrLf & vbCrLf & _
+            "Abra a montagem mestre e execute novamente.", _
+            "Montagem necessária", _
+            System.Windows.Forms.MessageBoxButtons.OK, _
+            System.Windows.Forms.MessageBoxIcon.Warning)
+
+        Return
+
+    End If
+
+    ' ========================================================
+    ' WORKSPACE DO PROJETO ATIVO
+    ' ========================================================
+
+    Dim sWSPath As String = ""
+
+    Try
+
+        sWSPath = _
+            ThisApplication.DesignProjectManager. _
+            ActiveDesignProject.WorkspacePath
+
+    Catch ex As System.Exception
+
+        System.Windows.Forms.MessageBox.Show( _
+            "Não foi possível obter o Workspace do projeto." & _
+            vbCrLf & vbCrLf & ex.Message, _
+            "Erro no Workspace")
+
+        Return
+
+    End Try
+
+    If String.IsNullOrWhiteSpace(sWSPath) OrElse _
+       Not System.IO.Directory.Exists(sWSPath) Then
+
+        System.Windows.Forms.MessageBox.Show( _
+            "Workspace inválido ou inexistente:" & _
+            vbCrLf & sWSPath, _
+            "Workspace")
+
+        Return
+
+    End If
+
+    sWSPath = System.IO.Path.GetFullPath(sWSPath)
+
+    ' ========================================================
+    ' PASTA DE DESTINO
+    ' ========================================================
+
+    Dim sOrfaosPath As String = _
+        System.IO.Path.Combine(sWSPath, "Órfãos")
+
+    ' ========================================================
+    ' COLETAR REFERÊNCIAS DA MONTAGEM MESTRE
+    ' ========================================================
+
+    Dim oAllRefFiles As New _
+        System.Collections.Generic.HashSet(Of String)( _
+            System.StringComparer.OrdinalIgnoreCase)
+
+    Try
+
+        For Each oRefFile As Inventor.File _
+            In oDoc.File.AllReferencedFiles
+
+            If oRefFile Is Nothing Then
+                Continue For
+            End If
+
+            Dim sRefFile As String = oRefFile.FullFileName
+
+            If Not String.IsNullOrWhiteSpace(sRefFile) Then
+
+                oAllRefFiles.Add( _
+                    System.IO.Path.GetFullPath(sRefFile))
+
+            End If
+
+        Next
+
+    Catch ex As System.Exception
+
+        System.Windows.Forms.MessageBox.Show( _
+            "Não foi possível coletar as referências da montagem." & _
+            vbCrLf & vbCrLf & ex.Message & vbCrLf & vbCrLf & _
+            "Nenhum arquivo foi movimentado.", _
+            "Erro ao ler referências")
+
+        Return
+
+    End Try
+
+    ' Incluir a própria montagem mestre.
+
+    oAllRefFiles.Add( _
+        System.IO.Path.GetFullPath(oDoc.FullFileName))
+
+    ' ========================================================
+    ' LOCALIZAR ARQUIVOS IPT E IAM
+    ' IGNORAR OldVersions E Órfãos
+    ' ========================================================
+
+    Dim oAll_Inv_Files As New _
+        System.Collections.Generic.List(Of String)
+
+    Dim oDirs As New _
+        System.Collections.Generic.Stack(Of String)
+
+    oDirs.Push(sWSPath)
+
+    Dim oScanErrors As New System.Collections.Generic.List(Of String)
+
+    While oDirs.Count > 0
+
+        Dim sCurrentDir As String = oDirs.Pop()
+
+        ' ----------------------------------------------------
+        ' ARQUIVOS NA PASTA ATUAL
+        ' ----------------------------------------------------
+
+        Try
+
+            For Each sFile As String In _
+                System.IO.Directory.GetFiles(sCurrentDir)
+
+                Dim sExt As String = _
+                    System.IO.Path.GetExtension(sFile)
+
+                If String.Equals( _
+                    sExt, ".iam", _
+                    System.StringComparison.OrdinalIgnoreCase) OrElse _
+                   String.Equals( _
+                    sExt, ".ipt", _
+                    System.StringComparison.OrdinalIgnoreCase) Then
+
+                    oAll_Inv_Files.Add( _
+                        System.IO.Path.GetFullPath(sFile))
+
+                End If
+
+            Next
+
+        Catch ex As System.Exception
+
+            oScanErrors.Add( _
+                "Falha ao listar arquivos: " & sCurrentDir & _
+                " | " & ex.Message)
+
+        End Try
+
+        ' ----------------------------------------------------
+        ' SUBPASTAS
+        ' ----------------------------------------------------
+
+        Try
+
+            For Each sSubDir As String In _
+                System.IO.Directory.GetDirectories(sCurrentDir)
+
+                Dim sFolderName As String = _
+                    System.IO.Path.GetFileName(sSubDir)
+
+                ' Ignorar OldVersions em qualquer nível.
+
+                If String.Equals( _
+                    sFolderName, _
+                    "OldVersions", _
+                    System.StringComparison.OrdinalIgnoreCase) Then
+
+                    Continue For
+
+                End If
+
+                ' Ignorar Órfãos em qualquer nível.
+
+                If String.Equals( _
+                    sFolderName, _
+                    "Órfãos", _
+                    System.StringComparison.OrdinalIgnoreCase) Then
+
+                    Continue For
+
+                End If
+
+                oDirs.Push( _
+                    System.IO.Path.GetFullPath(sSubDir))
+
+            Next
+
+        Catch ex As System.Exception
+
+            oScanErrors.Add( _
+                "Falha ao listar subpastas: " & sCurrentDir & _
+                " | " & ex.Message)
+
+        End Try
+
+    End While
+
+    ' ========================================================
+    ' IDENTIFICAR ARQUIVOS POTENCIALMENTE NÃO UTILIZADOS
+    ' ========================================================
+
+    Dim oUnusedList As New _
+        System.Collections.Generic.List(Of String)
+
+    For Each sFile As String In oAll_Inv_Files
+
+        If Not oAllRefFiles.Contains( _
+            System.IO.Path.GetFullPath(sFile)) Then
+
+            oUnusedList.Add( _
+                System.IO.Path.GetFullPath(sFile))
+
+        End If
+
+    Next
+
+    oUnusedList.Sort( _
+        System.StringComparer.OrdinalIgnoreCase)
+
+    ' ========================================================
+    ' RELATÓRIO INICIAL
+    ' ========================================================
+
+    Dim oReport As New System.Text.StringBuilder()
+
+    oReport.AppendLine( _
+        "============================================================")
+
+    oReport.AppendLine( _
+        "RELATÓRIO DE ARQUIVOS POTENCIALMENTE NÃO UTILIZADOS")
+
+    oReport.AppendLine( _
+        "============================================================")
+
+    oReport.AppendLine()
+
+    oReport.AppendLine("Montagem mestre analisada:")
+    oReport.AppendLine(oDoc.FullFileName)
+
+    oReport.AppendLine()
+
+    oReport.AppendLine("Workspace:")
+    oReport.AppendLine(sWSPath)
+
+    oReport.AppendLine()
+
+    oReport.AppendLine("Pasta de destino:")
+    oReport.AppendLine(sOrfaosPath)
+
+    oReport.AppendLine()
+
+    oReport.AppendLine("Pastas OldVersions: ignoradas")
+    oReport.AppendLine("Pasta Órfãos: ignorada durante a pesquisa")
+    oReport.AppendLine("Estrutura relativa das pastas: preservada")
+
+    oReport.AppendLine()
+
+    oReport.AppendLine( _
+        "Arquivos IPT/IAM encontrados: " & oAll_Inv_Files.Count)
+
+    oReport.AppendLine( _
+        "Referências coletadas: " & oAllRefFiles.Count)
+
+    oReport.AppendLine( _
+        "Arquivos potencialmente não utilizados: " & oUnusedList.Count)
+
+    oReport.AppendLine()
+
+    If oScanErrors.Count > 0 Then
+
+        oReport.AppendLine( _
+            "ATENÇÃO: ocorreram erros durante a pesquisa.")
+
+        For Each sError As String In oScanErrors
+
+            oReport.AppendLine(sError)
+
+        Next
+
+        oReport.AppendLine()
+
+    End If
+
+    ' ========================================================
+    ' NENHUM ARQUIVO ENCONTRADO
+    ' ========================================================
+
+    If oUnusedList.Count = 0 Then
+
+        oReport.AppendLine( _
+            "Nenhum arquivo potencialmente não utilizado foi encontrado.")
+
+        oReport.AppendLine()
+        oReport.AppendLine("Nenhum arquivo foi movimentado ou excluído.")
+
+        Try
+
+            System.IO.File.WriteAllText( _
+                System.IO.Path.Combine(sWSPath, "UnUsedFiles.txt"), _
+                oReport.ToString(), _
+                System.Text.Encoding.UTF8)
+
+        Catch
+        End Try
+
+        ShowReportForm( _
+            oReport.ToString(), _
+            "ANÁLISE CONCLUÍDA")
+
+        Return
+
+    End If
+
+    ' ========================================================
+    ' CONFIRMAÇÃO
+    ' ========================================================
+
+    Dim sConfirm As String = _
+        "ATENÇÃO - CONFIRMAÇÃO NECESSÁRIA" & vbCrLf & vbCrLf & _
+        "Foram encontrados " & oUnusedList.Count & _
+        " arquivos potencialmente não utilizados." & vbCrLf & vbCrLf & _
+        "Destino:" & vbCrLf & sOrfaosPath & vbCrLf & vbCrLf & _
+        "IMPORTANTE:" & vbCrLf & _
+        "Se a montagem mestre realmente reúne todas as montagens" & vbCrLf & _
+        "e peças que você deseja preservar, a lógica atual atende" & vbCrLf & _
+        "a esse cenário. Arquivos com nomes iguais em pastas" & vbCrLf & _
+        "diferentes permanecerão em subpastas distintas." & vbCrLf & vbCrLf & _
+        "Arquivos usados por outras montagens independentes podem" & vbCrLf & _
+        "ser identificados como órfãos." & vbCrLf & vbCrLf & _
+        "OldVersions será ignorada." & vbCrLf & _
+        "Nenhum arquivo será excluído." & vbCrLf & vbCrLf & _
+        "Recomenda-se testar primeiro em uma cópia do Workspace." & _
+        vbCrLf & vbCrLf & _
+        "Deseja continuar?"
+
+    If System.Windows.Forms.MessageBox.Show( _
+        sConfirm, _
+        "Advertência - Arquivos órfãos", _
+        System.Windows.Forms.MessageBoxButtons.YesNo, _
+        System.Windows.Forms.MessageBoxIcon.Warning, _
+        System.Windows.Forms.MessageBoxDefaultButton.Button2) <> _
+        System.Windows.Forms.DialogResult.Yes Then
+
+        Return
+
+    End If
+
+    ' ========================================================
+    ' CRIAR PASTA ÓRFÃOS
+    ' ========================================================
+
+    Try
+
+        System.IO.Directory.CreateDirectory(sOrfaosPath)
+
+    Catch ex As System.Exception
+
+        System.Windows.Forms.MessageBox.Show( _
+            "Não foi possível criar a pasta Órfãos:" & _
+            vbCrLf & vbCrLf & ex.Message, _
+            "Erro ao criar pasta")
+
+        Return
+
+    End Try
+
+    ' ========================================================
+    ' MOVIMENTAÇÃO
+    ' ========================================================
+
+    oReport.AppendLine("RESULTADOS DA MOVIMENTAÇÃO")
+
+    oReport.AppendLine( _
+        "------------------------------------------------------------")
+
+    Dim iMoved As Integer = 0
+    Dim iErrors As Integer = 0
+
+    For Each sSource As String In oUnusedList
+
+        Try
+
+            Dim sFullSource As String = _
+                System.IO.Path.GetFullPath(sSource)
+
+            ' ------------------------------------------------
+            ' GARANTIR QUE A ORIGEM ESTÁ DENTRO DO WORKSPACE
+            ' ------------------------------------------------
+
+            Dim sBasePath As String = _
+                sWSPath.TrimEnd( _
+                    System.IO.Path.DirectorySeparatorChar, _
+                    System.IO.Path.AltDirectorySeparatorChar) & _
+                    System.IO.Path.DirectorySeparatorChar
+
+            If Not sFullSource.StartsWith( _
+                sBasePath, _
+                System.StringComparison.OrdinalIgnoreCase) Then
+
+                Throw New System.IO.IOException( _
+                    "O arquivo está fora do Workspace.")
+
+            End If
+
+            ' ------------------------------------------------
+            ' CALCULAR CAMINHO RELATIVO SEM GetRelativePath
+            ' ------------------------------------------------
+
+            Dim sSourceDir As String = _
+                System.IO.Path.GetDirectoryName(sFullSource)
+
+            Dim sFullSourceDir As String = _
+                System.IO.Path.GetFullPath(sSourceDir)
+
+            Dim sRelativeDir As String = ""
+
+            If sFullSourceDir.StartsWith( _
+                sBasePath, _
+                System.StringComparison.OrdinalIgnoreCase) Then
+
+                sRelativeDir = _
+                    sFullSourceDir.Substring(sBasePath.Length)
+
+            End If
+
+            ' ------------------------------------------------
+            ' DEFINIR DIRETÓRIO DE DESTINO
+            ' ------------------------------------------------
+
+            Dim sDestinationDir As String = sOrfaosPath
+
+            If Not String.IsNullOrWhiteSpace(sRelativeDir) Then
+
+                sDestinationDir = _
+                    System.IO.Path.Combine( _
+                        sOrfaosPath, _
+                        sRelativeDir)
+
+            End If
+
+            System.IO.Directory.CreateDirectory(sDestinationDir)
+
+            Dim sFileName As String = _
+                System.IO.Path.GetFileName(sFullSource)
+
+            Dim sDestination As String = _
+                System.IO.Path.Combine( _
+                    sDestinationDir, _
+                    sFileName)
+
+            ' ------------------------------------------------
+            ' NÃO SOBRESCREVER
+            ' ------------------------------------------------
+
+            If System.IO.File.Exists(sDestination) OrElse _
+               System.IO.Directory.Exists(sDestination) Then
+
+                oReport.AppendLine( _
+                    "NÃO MOVIDO - DESTINO JÁ EXISTE")
+
+                oReport.AppendLine("Origem: " & sFullSource)
+                oReport.AppendLine("Destino: " & sDestination)
+                oReport.AppendLine()
+
+                iErrors += 1
+
+                Continue For
+
+            End If
+
+            ' ------------------------------------------------
+            ' MOVER ARQUIVO
+            ' ------------------------------------------------
+
+            System.IO.File.Move( _
+                sFullSource, _
+                sDestination)
+
+            oReport.AppendLine("MOVIDO COM SUCESSO")
+            oReport.AppendLine("Origem: " & sFullSource)
+            oReport.AppendLine("Destino: " & sDestination)
+            oReport.AppendLine()
+
+            iMoved += 1
+
+        Catch ex As System.Exception
+
+            oReport.AppendLine("ERRO AO MOVER")
+            oReport.AppendLine("Arquivo: " & sSource)
+            oReport.AppendLine("Motivo: " & ex.Message)
+            oReport.AppendLine()
+
+            iErrors += 1
+
+        End Try
+
+    Next
+
+    ' ========================================================
+    ' RESUMO FINAL
+    ' ========================================================
+
+    oReport.AppendLine( _
+        "============================================================")
+
+    oReport.AppendLine("RESUMO FINAL")
+
+    oReport.AppendLine( _
+        "============================================================")
+
+    oReport.AppendLine( _
+        "Total identificado: " & oUnusedList.Count)
+
+    oReport.AppendLine( _
+        "Movidos com sucesso: " & iMoved)
+
+    oReport.AppendLine( _
+        "Não movidos / erros: " & iErrors)
+
+    oReport.AppendLine()
+
+    oReport.AppendLine("Nenhum arquivo foi excluído.")
+    oReport.AppendLine("OldVersions foi ignorada durante a pesquisa.")
+    oReport.AppendLine("A pasta Órfãos foi ignorada durante a pesquisa.")
+    oReport.AppendLine("A estrutura relativa das pastas foi preservada.")
+
+    oReport.AppendLine( _
+        "Arquivos com nomes iguais em pastas diferentes permanecem separados.")
+
+    oReport.AppendLine()
+
+    oReport.AppendLine( _
+        "A análise considera as referências da montagem mestre.")
+
+    oReport.AppendLine( _
+        "Outras montagens independentes podem utilizar esses arquivos.")
+
+    ' ========================================================
+    ' SALVAR RELATÓRIO
+    ' ========================================================
+
+    Dim sTextFile As String = _
+        System.IO.Path.Combine(sWSPath, "UnUsedFiles.txt")
+
+    Try
+
+        System.IO.File.WriteAllText( _
+            sTextFile, _
+            oReport.ToString(), _
+            System.Text.Encoding.UTF8)
+
+    Catch ex As System.Exception
+
+        oReport.AppendLine()
+
+        oReport.AppendLine( _
+            "ERRO AO SALVAR O RELATÓRIO EM DISCO:")
+
+        oReport.AppendLine(sTextFile)
+        oReport.AppendLine(ex.Message)
+
+    End Try
+
+    ' ========================================================
+    ' EXIBIR RESULTADO EM FORMULÁRIO
+    ' ========================================================
+
+    ShowReportForm( _
+        oReport.ToString(), _
+        "RESULTADO DA MOVIMENTAÇÃO DE ARQUIVOS")
+
+End Sub
+
+
+' ============================================================
+' FORMULÁRIO DO RELATÓRIO
+' Sem dependência explícita de System.Drawing.
+' ============================================================
+
+Sub ShowReportForm( _
+    reportText As String, _
+    titulo As String)
+
+    Dim frm As New System.Windows.Forms.Form
+
+    frm.Text = titulo
+    frm.Width = 1200
+    frm.Height = 800
+
+    frm.StartPosition = _
+        System.Windows.Forms.FormStartPosition.CenterScreen
+
+    ' ========================================================
+    ' ÁREA DE TEXTO
+    ' ========================================================
+
+    Dim txt As New System.Windows.Forms.RichTextBox
+
+    txt.Multiline = True
+    txt.ReadOnly = True
+    txt.WordWrap = False
+
+    txt.Dock = _
+        System.Windows.Forms.DockStyle.Fill
+
+    txt.ScrollBars = _
+        System.Windows.Forms.RichTextBoxScrollBars.Both
+
+    txt.Text = reportText
+
+    frm.Controls.Add(txt)
+
+    ' ========================================================
+    ' PAINEL DOS BOTÕES
+    ' ========================================================
+
+    Dim pnlButtons As New System.Windows.Forms.Panel
+
+    pnlButtons.Dock = _
+        System.Windows.Forms.DockStyle.Bottom
+
+    pnlButtons.Height = 50
+
+    frm.Controls.Add(pnlButtons)
+
+    ' ========================================================
+    ' BOTÃO COPIAR
+    ' ========================================================
+
+    Dim btnCopy As New System.Windows.Forms.Button
+
+    btnCopy.Text = "Copiar relatório"
+    btnCopy.Width = 140
+    btnCopy.Height = 30
+    btnCopy.Left = 10
+    btnCopy.Top = 10
+
+    AddHandler btnCopy.Click, _
+        Sub(sender As Object, e As System.EventArgs)
+
+            Try
+
+                System.Windows.Forms.Clipboard.SetText(txt.Text)
+
+                System.Windows.Forms.MessageBox.Show( _
+                    "Relatório copiado para a área de transferência.", _
+                    "Relatório")
+
+            Catch ex As System.Exception
+
+                System.Windows.Forms.MessageBox.Show( _
+                    "Não foi possível copiar o relatório:" & _
+                    vbCrLf & ex.Message, _
+                    "Erro")
+
+            End Try
+
+        End Sub
+
+    pnlButtons.Controls.Add(btnCopy)
+
+    ' ========================================================
+    ' BOTÃO SALVAR COMO
+    ' ========================================================
+
+    Dim btnSave As New System.Windows.Forms.Button
+
+    btnSave.Text = "Salvar como..."
+    btnSave.Width = 140
+    btnSave.Height = 30
+    btnSave.Left = 160
+    btnSave.Top = 10
+
+    AddHandler btnSave.Click, _
+        Sub(sender As Object, e As System.EventArgs)
+
+            Try
+
+                Dim dlg As New System.Windows.Forms.SaveFileDialog
+
+                dlg.Title = "Salvar relatório"
+
+                dlg.Filter = _
+                    "Arquivo de texto (*.txt)|*.txt|" & _
+                    "Todos os arquivos (*.*)|*.*"
+
+                dlg.FileName = "UnUsedFiles.txt"
+
+                dlg.InitialDirectory = _
+                    System.Environment.GetFolderPath( _
+                        System.Environment.SpecialFolder.MyDocuments)
+
+                If dlg.ShowDialog(frm) = _
+                   System.Windows.Forms.DialogResult.OK Then
+
+                    System.IO.File.WriteAllText( _
+                        dlg.FileName, _
+                        txt.Text, _
+                        System.Text.Encoding.UTF8)
+
+                    System.Windows.Forms.MessageBox.Show( _
+                        "Relatório salvo em:" & vbCrLf & _
+                        dlg.FileName, _
+                        "Relatório salvo")
+
+                End If
+
+            Catch ex As System.Exception
+
+                System.Windows.Forms.MessageBox.Show( _
+                    "Erro ao salvar o relatório:" & _
+                    vbCrLf & ex.Message, _
+                    "Erro")
+
+            End Try
+
+        End Sub
+
+    pnlButtons.Controls.Add(btnSave)
+
+    ' ========================================================
+    ' BOTÃO FECHAR
+    ' ========================================================
+
+    Dim btnClose As New System.Windows.Forms.Button
+
+    btnClose.Text = "Fechar"
+    btnClose.Width = 100
+    btnClose.Height = 30
+    btnClose.Left = 310
+    btnClose.Top = 10
+
+    AddHandler btnClose.Click, _
+        Sub(sender As Object, e As System.EventArgs)
+
+            frm.Close()
+
+        End Sub
+
+    pnlButtons.Controls.Add(btnClose)
+
+    ' ========================================================
+    ' MOSTRAR FORMULÁRIO
+    ' ========================================================
+
+    frm.ShowDialog()
+
+End Sub
