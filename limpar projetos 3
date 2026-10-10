@@ -1,0 +1,1038 @@
+AddReference "D:\PC\Desktop\ObjectListView.dll"
+AddReference "System.Drawing.dll"
+Imports System
+Imports System.IO
+Imports System.Text
+Imports System.Linq
+Imports System.Collections.Generic
+Imports System.Windows.Forms
+Imports System.Drawing
+Imports BrightIdeasSoftware
+Imports Inventor
+
+
+
+' ============================================================
+' FindUnusedInventorFiles.iLogicVb
+' AUTODESK INVENTOR 2024
+'
+' IDENTIFICA IPT E IAM POTENCIALMENTE NÃO UTILIZADOS
+' PELA MONTAGEM MESTRE E APRESENTA OS RESULTADOS EM
+' ObjectListView.
+'
+' PROTEÇÕES:
+' - Ignora OldVersions e Órfãos em qualquer nível.
+' - Preserva a estrutura relativa das pastas.
+' - Não sobrescreve arquivos existentes.
+' - Não exclui arquivos.
+' - Exige confirmação antes da movimentação.
+' - Bloqueia a movimentação se ocorrer erro na pesquisa.
+' - Salva UnUsedFiles.txt no Workspace.
+' - Permite copiar e salvar o relatório.
+' - Utiliza caminhos completos para evitar ambiguidades.
+' ============================================================
+
+Public Class ArquivoOrfao
+
+    Public Property Nome As String
+    Public Property Extensao As String
+    Public Property Origem As String
+    Public Property Destino As String
+    Public Property Status As String
+    Public Property CaminhoCompleto As String
+
+    Public Sub New(caminho As String,
+                   workspace As String,
+                   pastaOrfaos As String)
+
+        CaminhoCompleto = System.IO.Path.GetFullPath(caminho)
+        Nome = System.IO.Path.GetFileName(caminho)
+        Extensao = System.IO.Path.GetExtension(caminho).ToUpperInvariant()
+        Origem = System.IO.Path.GetDirectoryName(CaminhoCompleto)
+        Destino = CalcularDestino(CaminhoCompleto, workspace, pastaOrfaos)
+        Status = "Pendente"
+
+    End Sub
+
+    Private Function CalcularDestino(
+        arquivo As String,
+        workspace As String,
+        pastaOrfaos As String) As String
+
+        Dim raiz As String =
+            System.IO.Path.GetFullPath(workspace).TrimEnd(
+                System.IO.Path.DirectorySeparatorChar,
+                System.IO.Path.AltDirectorySeparatorChar) &
+            System.IO.Path.DirectorySeparatorChar
+
+        Dim pastaOrigem As String =
+            System.IO.Path.GetDirectoryName(arquivo)
+
+        Dim pastaCompleta As String =
+            System.IO.Path.GetFullPath(pastaOrigem)
+
+        Dim relativa As String = ""
+
+        If pastaCompleta.StartsWith(
+            raiz, StringComparison.OrdinalIgnoreCase) Then
+
+            relativa = pastaCompleta.Substring(raiz.Length)
+
+        End If
+
+        Dim destinoPasta As String = pastaOrfaos
+
+        If Not String.IsNullOrWhiteSpace(relativa) Then
+            destinoPasta = System.IO.Path.Combine(pastaOrfaos, relativa)
+        End If
+
+        Return System.IO.Path.Combine(
+            destinoPasta,
+            System.IO.Path.GetFileName(arquivo))
+
+    End Function
+
+End Class
+
+' ============================================================
+' ENTRADA PRINCIPAL
+' ============================================================
+
+Sub Main()
+
+    Dim oDoc As Inventor.Document = ThisApplication.ActiveDocument
+
+    If oDoc Is Nothing Then
+        MessageBox.Show(
+            "Nenhum documento Inventor está aberto.",
+            "iLogic",
+            MessageBoxButtons.OK,
+            MessageBoxIcon.Warning)
+        Return
+    End If
+
+    If String.IsNullOrWhiteSpace(oDoc.FullFileName) Then
+        MessageBox.Show(
+            "Salve a montagem mestre antes de executar a regra.",
+            "Documento não salvo",
+            MessageBoxButtons.OK,
+            MessageBoxIcon.Warning)
+        Return
+    End If
+
+    If oDoc.DocumentType <>
+        Inventor.DocumentTypeEnum.kAssemblyDocumentObject Then
+
+        MessageBox.Show(
+            "O documento ativo não é uma montagem (.IAM)." &
+            vbCrLf & vbCrLf &
+            "Abra a montagem mestre e execute novamente.",
+            "Montagem necessária",
+            MessageBoxButtons.OK,
+            MessageBoxIcon.Warning)
+        Return
+
+    End If
+
+    Dim sWSPath As String = ""
+
+    Try
+        sWSPath =
+            ThisApplication.DesignProjectManager.
+            ActiveDesignProject.WorkspacePath
+
+    Catch ex As Exception
+        MessageBox.Show(
+            "Não foi possível obter o Workspace do projeto." &
+            vbCrLf & vbCrLf & ex.Message,
+            "Erro no Workspace",
+            MessageBoxButtons.OK,
+            MessageBoxIcon.Error)
+        Return
+    End Try
+
+    If String.IsNullOrWhiteSpace(sWSPath) OrElse
+       Not Directory.Exists(sWSPath) Then
+
+        MessageBox.Show(
+            "Workspace inválido ou inexistente:" &
+            vbCrLf & sWSPath,
+            "Workspace",
+            MessageBoxButtons.OK,
+            MessageBoxIcon.Warning)
+        Return
+
+    End If
+
+    sWSPath = System.IO.Path.GetFullPath(sWSPath)
+
+    Dim sOrfaosPath As String =
+        System.IO.Path.Combine(sWSPath, "Órfãos")
+
+    ' --------------------------------------------------------
+    ' COLETAR REFERÊNCIAS DA MONTAGEM MESTRE
+    ' --------------------------------------------------------
+
+    Dim oAllRefFiles As New HashSet(Of String)(
+        StringComparer.OrdinalIgnoreCase)
+
+    Try
+
+        For Each oRefFile As Inventor.File In
+            oDoc.File.AllReferencedFiles
+
+            If oRefFile Is Nothing Then Continue For
+
+            Dim sRefFile As String = oRefFile.FullFileName
+
+            If Not String.IsNullOrWhiteSpace(sRefFile) Then
+                oAllRefFiles.Add(
+                    System.IO.Path.GetFullPath(sRefFile))
+            End If
+
+        Next
+
+    Catch ex As Exception
+
+        MessageBox.Show(
+            "Não foi possível coletar as referências da montagem." &
+            vbCrLf & vbCrLf & ex.Message &
+            vbCrLf & vbCrLf &
+            "Nenhum arquivo foi movimentado.",
+            "Erro ao ler referências",
+            MessageBoxButtons.OK,
+            MessageBoxIcon.Error)
+        Return
+
+    End Try
+
+    oAllRefFiles.Add(
+        System.IO.Path.GetFullPath(oDoc.FullFileName))
+
+    ' --------------------------------------------------------
+    ' PESQUISA RECURSIVA DOS IPT/IAM
+    ' --------------------------------------------------------
+
+    Dim oAllInventorFiles As New List(Of String)
+    Dim oDirs As New Stack(Of String)
+    Dim oScanErrors As New List(Of String)
+
+    oDirs.Push(sWSPath)
+
+    While oDirs.Count > 0
+
+        Dim sCurrentDir As String = oDirs.Pop()
+
+        Try
+
+            For Each sFile As String In
+                Directory.GetFiles(sCurrentDir)
+
+                Dim sExt As String =
+                    System.IO.Path.GetExtension(sFile)
+
+                If String.Equals(
+                    sExt, ".iam",
+                    StringComparison.OrdinalIgnoreCase) OrElse
+                   String.Equals(
+                    sExt, ".ipt",
+                    StringComparison.OrdinalIgnoreCase) Then
+
+                    oAllInventorFiles.Add(
+                        System.IO.Path.GetFullPath(sFile))
+
+                End If
+
+            Next
+
+        Catch ex As Exception
+
+            oScanErrors.Add(
+                "Falha ao listar arquivos: " &
+                sCurrentDir & " | " & ex.Message)
+
+        End Try
+
+        Try
+
+            For Each sSubDir As String In
+                Directory.GetDirectories(sCurrentDir)
+
+                Dim sFolderName As String =
+                    System.IO.Path.GetFileName(sSubDir)
+
+                If String.Equals(
+                    sFolderName, "OldVersions",
+                    StringComparison.OrdinalIgnoreCase) Then
+                    Continue For
+                End If
+
+                If String.Equals(
+                    sFolderName, "Órfãos",
+                    StringComparison.OrdinalIgnoreCase) Then
+                    Continue For
+                End If
+
+                oDirs.Push(
+                    System.IO.Path.GetFullPath(sSubDir))
+
+            Next
+
+        Catch ex As Exception
+
+            oScanErrors.Add(
+                "Falha ao listar subpastas: " &
+                sCurrentDir & " | " & ex.Message)
+
+        End Try
+
+    End While
+
+    ' --------------------------------------------------------
+    ' IDENTIFICAR ARQUIVOS NÃO REFERENCIADOS
+    ' --------------------------------------------------------
+
+    Dim oUnusedList As New List(Of String)
+
+    For Each sFile As String In oAllInventorFiles
+
+        If Not oAllRefFiles.Contains(
+            System.IO.Path.GetFullPath(sFile)) Then
+
+            oUnusedList.Add(
+                System.IO.Path.GetFullPath(sFile))
+
+        End If
+
+    Next
+
+    oUnusedList.Sort(StringComparer.OrdinalIgnoreCase)
+
+    Dim oItens As New List(Of ArquivoOrfao)
+
+    For Each sFile As String In oUnusedList
+        oItens.Add(
+            New ArquivoOrfao(sFile, sWSPath, sOrfaosPath))
+    Next
+
+    ' --------------------------------------------------------
+    ' RELATÓRIO INICIAL
+    ' --------------------------------------------------------
+
+    Dim oReport As New StringBuilder()
+
+    oReport.AppendLine("============================================================")
+    oReport.AppendLine("RELATÓRIO DE ARQUIVOS POTENCIALMENTE NÃO UTILIZADOS")
+    oReport.AppendLine("============================================================")
+    oReport.AppendLine()
+    oReport.AppendLine("Montagem mestre analisada:")
+    oReport.AppendLine(oDoc.FullFileName)
+    oReport.AppendLine()
+    oReport.AppendLine("Workspace:")
+    oReport.AppendLine(sWSPath)
+    oReport.AppendLine()
+    oReport.AppendLine("Pasta de destino:")
+    oReport.AppendLine(sOrfaosPath)
+    oReport.AppendLine()
+    oReport.AppendLine("Pastas OldVersions: ignoradas")
+    oReport.AppendLine("Pasta Órfãos: ignorada durante a pesquisa")
+    oReport.AppendLine("Estrutura relativa das pastas: preservada")
+    oReport.AppendLine(
+        "Arquivos IPT/IAM encontrados: " &
+        oAllInventorFiles.Count)
+    oReport.AppendLine(
+        "Referências coletadas: " & oAllRefFiles.Count)
+    oReport.AppendLine(
+        "Arquivos potencialmente não utilizados: " &
+        oUnusedList.Count)
+    oReport.AppendLine()
+
+    If oScanErrors.Count > 0 Then
+
+        oReport.AppendLine(
+            "ATENÇÃO: ocorreram erros durante a pesquisa.")
+
+        For Each sError As String In oScanErrors
+            oReport.AppendLine(sError)
+        Next
+
+        oReport.AppendLine()
+        oReport.AppendLine(
+            "Por segurança, a movimentação automática ficará bloqueada.")
+
+    End If
+
+    If oUnusedList.Count = 0 Then
+
+        oReport.AppendLine(
+            "Nenhum arquivo potencialmente não utilizado foi encontrado.")
+        oReport.AppendLine()
+        oReport.AppendLine(
+            "Nenhum arquivo foi movimentado ou excluído.")
+
+        SalvarRelatorioWorkspace(sWSPath, oReport.ToString())
+
+        MostrarFormularioArquivos(
+            oItens,
+            oReport,
+            sWSPath,
+            sOrfaosPath,
+            oScanErrors.Count > 0)
+
+        Return
+
+    End If
+
+    MostrarFormularioArquivos(
+        oItens,
+        oReport,
+        sWSPath,
+        sOrfaosPath,
+        oScanErrors.Count > 0)
+
+End Sub
+
+' ============================================================
+' FORMULÁRIO OBJECTLISTVIEW
+' ============================================================
+
+Sub MostrarFormularioArquivos(
+    itens As List(Of ArquivoOrfao),
+    relatorio As StringBuilder,
+    workspace As String,
+    pastaOrfaos As String,
+    temErroPesquisa As Boolean)
+
+    Dim frm As New Form()
+
+    frm.Text = "Gestão de Arquivos Órfãos - Inventor 2024"
+    frm.Width = 1400
+    frm.Height = 820
+    frm.MinimumSize = New System.Drawing.Size(1000, 600)
+    frm.StartPosition = FormStartPosition.CenterScreen
+
+    Dim layout As New TableLayoutPanel()
+
+    layout.Dock = DockStyle.Fill
+    layout.ColumnCount = 1
+    layout.RowCount = 3
+
+    layout.RowStyles.Add(
+        New RowStyle(SizeType.Absolute, 100))
+    layout.RowStyles.Add(
+        New RowStyle(SizeType.Percent, 100))
+    layout.RowStyles.Add(
+        New RowStyle(SizeType.Absolute, 58))
+
+    frm.Controls.Add(layout)
+
+    ' --------------------------------------------------------
+    ' CABEÇALHO
+    ' --------------------------------------------------------
+
+    Dim pnlTopo As New Panel()
+
+    pnlTopo.Dock = DockStyle.Fill
+    pnlTopo.Padding = New Padding(12, 8, 12, 8)
+
+    layout.Controls.Add(pnlTopo, 0, 0)
+
+    Dim lblTitulo As New Label()
+
+    lblTitulo.Text = "Arquivos potencialmente não utilizados"
+    lblTitulo.Font = New System.Drawing.Font(
+        "Segoe UI", 15, System.Drawing.FontStyle.Bold)
+    lblTitulo.AutoSize = True
+    lblTitulo.Left = 12
+    lblTitulo.Top = 8
+
+    pnlTopo.Controls.Add(lblTitulo)
+
+    Dim lblResumo As New Label()
+
+    lblResumo.Text =
+        "Encontrados: " & itens.Count &
+        "    |    IPT: " &
+        itens.Where(Function(x) x.Extensao = ".IPT").Count() &
+        "    |    IAM: " &
+        itens.Where(Function(x) x.Extensao = ".IAM").Count()
+
+    lblResumo.Font = New System.Drawing.Font(
+        "Segoe UI", 10, System.Drawing.FontStyle.Regular)
+    lblResumo.AutoSize = True
+    lblResumo.Left = 14
+    lblResumo.Top = 42
+
+    pnlTopo.Controls.Add(lblResumo)
+
+    Dim lblAviso As New Label()
+
+    If temErroPesquisa Then
+
+        lblAviso.Text =
+            "Atenção: houve falha na pesquisa. " &
+            "A movimentação está bloqueada por segurança."
+
+        lblAviso.ForeColor = System.Drawing.Color.DarkRed
+
+    Else
+
+        lblAviso.Text =
+            "Revise a lista. A movimentação só ocorrerá após confirmação."
+
+        lblAviso.ForeColor = System.Drawing.Color.DarkSlateBlue
+
+    End If
+
+    lblAviso.Font = New System.Drawing.Font(
+        "Segoe UI", 9, System.Drawing.FontStyle.Regular)
+    lblAviso.AutoSize = True
+    lblAviso.Left = 14
+    lblAviso.Top = 66
+
+    pnlTopo.Controls.Add(lblAviso)
+
+    ' --------------------------------------------------------
+    ' OBJECTLISTVIEW
+    ' --------------------------------------------------------
+
+    Dim olv As New ObjectListView()
+
+    olv.Dock = DockStyle.Fill
+    olv.FullRowSelect = True
+    olv.MultiSelect = True
+    olv.ShowGroups = False
+    olv.HideSelection = False
+    olv.UseAlternatingBackColors = True
+    olv.GridLines = True
+    olv.SelectAllOnControlA = True
+    olv.EmptyListMsg =
+        "Nenhum arquivo potencialmente não utilizado foi encontrado."
+
+    olv.EmptyListMsgFont = New System.Drawing.Font(
+        "Segoe UI", 12, System.Drawing.FontStyle.Italic)
+
+    Dim imagens As New ImageList()
+
+    imagens.ColorDepth = ColorDepth.Depth32Bit
+    imagens.ImageSize = New System.Drawing.Size(20, 20)
+
+    Try
+        imagens.Images.Add(
+            "IPT",
+            System.Drawing.SystemIcons.Application.ToBitmap())
+    Catch
+        imagens.Images.Add(
+            "IPT",
+            System.Drawing.SystemIcons.WinLogo.ToBitmap())
+    End Try
+
+    Try
+        imagens.Images.Add(
+            "IAM",
+            System.Drawing.SystemIcons.WinLogo.ToBitmap())
+    Catch
+        imagens.Images.Add(
+            "IAM",
+            System.Drawing.SystemIcons.Application.ToBitmap())
+    End Try
+
+    olv.SmallImageList = imagens
+
+    Dim colNome As New OLVColumn("Arquivo", "Nome")
+
+    colNome.Width = 220
+    colNome.MinimumWidth = 160
+    colNome.ImageGetter =
+        Function(rowObject As Object)
+            Dim item As ArquivoOrfao =
+                DirectCast(rowObject, ArquivoOrfao)
+
+            If item.Extensao = ".IAM" Then
+                Return "IAM"
+            End If
+
+            Return "IPT"
+        End Function
+
+    Dim colTipo As New OLVColumn("Tipo", "Extensao")
+
+    colTipo.Width = 75
+    colTipo.TextAlign = HorizontalAlignment.Center
+
+    Dim colOrigem As New OLVColumn("Pasta de origem", "Origem")
+
+    colOrigem.Width = 420
+    colOrigem.MinimumWidth = 220
+
+    Dim colDestino As New OLVColumn("Destino previsto", "Destino")
+
+    colDestino.Width = 420
+    colDestino.MinimumWidth = 220
+
+    Dim colStatus As New OLVColumn("Status", "Status")
+
+    colStatus.Width = 130
+    colStatus.MinimumWidth = 110
+
+    olv.AllColumns.Add(colNome)
+    olv.AllColumns.Add(colTipo)
+    olv.AllColumns.Add(colOrigem)
+    olv.AllColumns.Add(colDestino)
+    olv.AllColumns.Add(colStatus)
+
+    olv.RebuildColumns()
+    olv.SetObjects(itens)
+
+    AddHandler olv.FormatRow,
+        Sub(sender As Object, e As FormatRowEventArgs)
+
+            Dim item As ArquivoOrfao =
+                TryCast(e.Model, ArquivoOrfao)
+
+            If item IsNot Nothing Then
+
+                If item.Status.StartsWith(
+                    "Erro", StringComparison.OrdinalIgnoreCase) OrElse
+                   item.Status.StartsWith(
+                    "Conflito", StringComparison.OrdinalIgnoreCase) Then
+
+                    e.Item.ForeColor = System.Drawing.Color.DarkRed
+
+                ElseIf item.Status = "Movido" Then
+
+                    e.Item.ForeColor = System.Drawing.Color.DarkGreen
+
+                End If
+
+            End If
+
+        End Sub
+
+    layout.Controls.Add(olv, 0, 1)
+
+    ' --------------------------------------------------------
+    ' BOTÕES
+    ' --------------------------------------------------------
+
+    Dim pnlBotoes As New FlowLayoutPanel()
+
+    pnlBotoes.Dock = DockStyle.Fill
+    pnlBotoes.FlowDirection = FlowDirection.LeftToRight
+    pnlBotoes.WrapContents = False
+    pnlBotoes.Padding = New Padding(10, 10, 10, 6)
+
+    layout.Controls.Add(pnlBotoes, 0, 2)
+
+    Dim btnMover As New Button()
+
+    btnMover.Text = "Mover todos..."
+    btnMover.Width = 145
+    btnMover.Height = 32
+    btnMover.Enabled =
+        (itens.Count > 0 AndAlso Not temErroPesquisa)
+
+    pnlBotoes.Controls.Add(btnMover)
+
+    Dim btnCopiar As New Button()
+
+    btnCopiar.Text = "Copiar relatório"
+    btnCopiar.Width = 145
+    btnCopiar.Height = 32
+
+    pnlBotoes.Controls.Add(btnCopiar)
+
+    Dim btnSalvar As New Button()
+
+    btnSalvar.Text = "Salvar como..."
+    btnSalvar.Width = 130
+    btnSalvar.Height = 32
+
+    pnlBotoes.Controls.Add(btnSalvar)
+
+    Dim btnDestino As New Button()
+
+    btnDestino.Text = "Abrir pasta Órfãos"
+    btnDestino.Width = 150
+    btnDestino.Height = 32
+
+    pnlBotoes.Controls.Add(btnDestino)
+
+    Dim btnFechar As New Button()
+
+    btnFechar.Text = "Fechar"
+    btnFechar.Width = 100
+    btnFechar.Height = 32
+
+    pnlBotoes.Controls.Add(btnFechar)
+
+    ' --------------------------------------------------------
+    ' MOVER ARQUIVOS
+    ' --------------------------------------------------------
+
+    AddHandler btnMover.Click,
+        Sub(sender As Object, e As EventArgs)
+
+            If temErroPesquisa Then
+
+                MessageBox.Show(
+                    "A movimentação foi bloqueada porque ocorreram " &
+                    "erros durante a pesquisa." & vbCrLf &
+                    "Corrija os problemas de acesso e execute novamente.",
+                    "Movimentação bloqueada",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Warning)
+
+                Return
+
+            End If
+
+            If itens.Count = 0 Then
+
+                MessageBox.Show(
+                    "Não há arquivos para movimentar.",
+                    "Arquivos órfãos")
+
+                Return
+
+            End If
+
+            Dim confirmacao As String =
+                "Foram identificados " & itens.Count &
+                " arquivos potencialmente não utilizados." &
+                vbCrLf & vbCrLf &
+                "Todos os arquivos listados serão processados." &
+                vbCrLf &
+                "Arquivos com destino já existente não serão sobrescritos." &
+                vbCrLf &
+                "Nenhum arquivo será excluído." &
+                vbCrLf & vbCrLf &
+                "Destino:" & vbCrLf &
+                pastaOrfaos & vbCrLf & vbCrLf &
+                "A análise considera somente as referências da montagem mestre." &
+                vbCrLf &
+                "Outras montagens independentes podem utilizar esses arquivos." &
+                vbCrLf & vbCrLf &
+                "Deseja continuar?"
+
+            If MessageBox.Show(
+                confirmacao,
+                "Confirmar movimentação",
+                MessageBoxButtons.YesNo,
+                MessageBoxIcon.Warning,
+                MessageBoxDefaultButton.Button2) <> DialogResult.Yes Then
+
+                Return
+
+            End If
+
+            Try
+
+                Directory.CreateDirectory(pastaOrfaos)
+
+            Catch ex As Exception
+
+                MessageBox.Show(
+                    "Não foi possível criar a pasta Órfãos:" &
+                    vbCrLf & ex.Message,
+                    "Erro",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Error)
+
+                Return
+
+            End Try
+
+            Dim moved As Integer = 0
+            Dim errors As Integer = 0
+
+            Dim raiz As String =
+                System.IO.Path.GetFullPath(workspace).TrimEnd(
+                    System.IO.Path.DirectorySeparatorChar,
+                    System.IO.Path.AltDirectorySeparatorChar) &
+                System.IO.Path.DirectorySeparatorChar
+
+            For Each item As ArquivoOrfao In itens
+
+                Try
+
+                    Dim origem As String =
+                        System.IO.Path.GetFullPath(item.CaminhoCompleto)
+
+                    If Not origem.StartsWith(
+                        raiz, StringComparison.OrdinalIgnoreCase) Then
+
+                        Throw New IOException(
+                            "O arquivo está fora do Workspace.")
+
+                    End If
+
+                    If Not System.IO.File.Exists(origem) Then
+
+                        Throw New IOException(
+                            "O arquivo de origem não existe mais.")
+
+                    End If
+
+                    Dim pastaOrigem As String =
+                        System.IO.Path.GetDirectoryName(origem)
+
+                    Dim pastaCompleta As String =
+                        System.IO.Path.GetFullPath(pastaOrigem)
+
+                    Dim relativa As String = ""
+
+                    If pastaCompleta.StartsWith(
+                        raiz, StringComparison.OrdinalIgnoreCase) Then
+
+                        relativa = pastaCompleta.Substring(raiz.Length)
+
+                    End If
+
+                    Dim pastaDestino As String = pastaOrfaos
+
+                    If Not String.IsNullOrWhiteSpace(relativa) Then
+
+                        pastaDestino =
+                            System.IO.Path.Combine(pastaOrfaos, relativa)
+
+                    End If
+
+                    Directory.CreateDirectory(pastaDestino)
+
+                    Dim destino As String =
+                        System.IO.Path.Combine(
+                            pastaDestino,
+                            System.IO.Path.GetFileName(origem))
+
+                    If System.IO.File.Exists(destino) OrElse
+                       Directory.Exists(destino) Then
+
+                        item.Status = "Conflito: destino existe"
+
+                        relatorio.AppendLine(
+                            "NÃO MOVIDO - DESTINO JÁ EXISTE")
+                        relatorio.AppendLine("Origem: " & origem)
+                        relatorio.AppendLine("Destino: " & destino)
+                        relatorio.AppendLine()
+
+                        errors += 1
+                        Continue For
+
+                    End If
+
+                    System.IO.File.Move(origem, destino)
+
+                    item.Status = "Movido"
+                    item.Destino = destino
+
+                    relatorio.AppendLine("MOVIDO COM SUCESSO")
+                    relatorio.AppendLine("Origem: " & origem)
+                    relatorio.AppendLine("Destino: " & destino)
+                    relatorio.AppendLine()
+
+                    moved += 1
+
+                Catch ex As Exception
+
+                    item.Status = "Erro: " & ex.Message
+
+                    relatorio.AppendLine("ERRO AO MOVER")
+                    relatorio.AppendLine(
+                        "Arquivo: " & item.CaminhoCompleto)
+                    relatorio.AppendLine("Motivo: " & ex.Message)
+                    relatorio.AppendLine()
+
+                    errors += 1
+
+                End Try
+
+            Next
+
+            relatorio.AppendLine(
+                "============================================================")
+            relatorio.AppendLine("RESUMO FINAL")
+            relatorio.AppendLine(
+                "============================================================")
+            relatorio.AppendLine("Total identificado: " & itens.Count)
+            relatorio.AppendLine("Movidos com sucesso: " & moved)
+            relatorio.AppendLine("Não movidos / erros: " & errors)
+            relatorio.AppendLine()
+            relatorio.AppendLine("Nenhum arquivo foi excluído.")
+            relatorio.AppendLine(
+                "A estrutura relativa das pastas foi preservada.")
+            relatorio.AppendLine(
+                "Arquivos com nomes iguais em pastas diferentes permanecem separados.")
+            relatorio.AppendLine(
+                "A análise considera as referências da montagem mestre.")
+            relatorio.AppendLine(
+                "Outras montagens independentes podem utilizar esses arquivos.")
+
+            olv.RefreshObjects(itens)
+            olv.RebuildColumns()
+
+            SalvarRelatorioWorkspace(workspace, relatorio.ToString())
+
+            MessageBox.Show(
+                "Processamento concluído." & vbCrLf & vbCrLf &
+                "Identificados: " & itens.Count & vbCrLf &
+                "Movidos: " & moved & vbCrLf &
+                "Não movidos / erros: " & errors & vbCrLf & vbCrLf &
+                "Relatório: " &
+                System.IO.Path.Combine(workspace, "UnUsedFiles.txt"),
+                "Resultado da movimentação",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Information)
+
+            btnMover.Enabled = False
+
+        End Sub
+
+    ' --------------------------------------------------------
+    ' COPIAR RELATÓRIO
+    ' --------------------------------------------------------
+
+    AddHandler btnCopiar.Click,
+        Sub(sender As Object, e As EventArgs)
+
+            Try
+
+                Clipboard.SetText(relatorio.ToString())
+
+                MessageBox.Show(
+                    "Relatório copiado para a área de transferência.",
+                    "Relatório")
+
+            Catch ex As Exception
+
+                MessageBox.Show(
+                    "Não foi possível copiar o relatório:" &
+                    vbCrLf & ex.Message,
+                    "Erro",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Error)
+
+            End Try
+
+        End Sub
+
+    ' --------------------------------------------------------
+    ' SALVAR COMO
+    ' --------------------------------------------------------
+
+    AddHandler btnSalvar.Click,
+        Sub(sender As Object, e As EventArgs)
+
+            Try
+
+                Dim dlg As New SaveFileDialog()
+
+                dlg.Title = "Salvar relatório"
+                dlg.Filter =
+                    "Arquivo de texto (*.txt)|*.txt|Todos os arquivos (*.*)|*.*"
+                dlg.FileName = "UnUsedFiles.txt"
+
+                dlg.InitialDirectory =
+                    System.Environment.GetFolderPath(
+                        System.Environment.SpecialFolder.MyDocuments)
+
+                If dlg.ShowDialog(frm) = DialogResult.OK Then
+
+                    System.IO.File.WriteAllText(
+                        dlg.FileName,
+                        relatorio.ToString(),
+                        System.Text.Encoding.UTF8)
+
+                    MessageBox.Show(
+                        "Relatório salvo em:" & vbCrLf & dlg.FileName,
+                        "Relatório salvo")
+
+                End If
+
+            Catch ex As Exception
+
+                MessageBox.Show(
+                    "Erro ao salvar o relatório:" &
+                    vbCrLf & ex.Message,
+                    "Erro",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Error)
+
+            End Try
+
+        End Sub
+
+    ' --------------------------------------------------------
+    ' ABRIR PASTA ÓRFÃOS
+    ' --------------------------------------------------------
+
+    AddHandler btnDestino.Click,
+        Sub(sender As Object, e As EventArgs)
+
+            Try
+
+                If Not Directory.Exists(pastaOrfaos) Then
+
+                    MessageBox.Show(
+                        "A pasta Órfãos ainda não foi criada.",
+                        "Pasta não encontrada")
+
+                    Return
+
+                End If
+
+                System.Diagnostics.Process.Start(
+                    "explorer.exe",
+                    """" & pastaOrfaos & """")
+
+            Catch ex As Exception
+
+                MessageBox.Show(
+                    "Não foi possível abrir a pasta:" &
+                    vbCrLf & ex.Message,
+                    "Erro",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Error)
+
+            End Try
+
+        End Sub
+
+    AddHandler btnFechar.Click,
+        Sub(sender As Object, e As EventArgs)
+            frm.Close()
+        End Sub
+
+    frm.ShowDialog()
+
+End Sub
+
+' ============================================================
+' SALVAR RELATÓRIO NO WORKSPACE
+' ============================================================
+
+Sub SalvarRelatorioWorkspace(workspace As String, conteudo As String)
+
+    Dim arquivoRelatorio As String =
+        System.IO.Path.Combine(workspace, "UnUsedFiles.txt")
+
+    Try
+
+        System.IO.File.WriteAllText(
+            arquivoRelatorio,
+            conteudo,
+            System.Text.Encoding.UTF8)
+
+    Catch ex As Exception
+
+        MessageBox.Show(
+            "Não foi possível salvar o relatório no Workspace:" &
+            vbCrLf & arquivoRelatorio &
+            vbCrLf & vbCrLf & ex.Message,
+            "Erro ao salvar relatório",
+            MessageBoxButtons.OK,
+            MessageBoxIcon.Warning)
+
+    End Try
+
+End Sub
